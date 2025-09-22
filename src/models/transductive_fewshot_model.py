@@ -230,7 +230,7 @@ class TransductiveLearner(nn.Module):
         test_predictions = self.initialize_test_predictions(test_embeddings, prototypes, unique_labels)
         
         # Enhanced transductive optimization with adaptive learning
-        optimizer = optim.Adam(self.parameters(), lr=self.transductive_lr)
+        optimizer = optim.AdamW(self.parameters(), lr=self.transductive_lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.8, patience=5)
         
         best_loss = float('inf')
@@ -483,7 +483,7 @@ class MetaLearner(nn.Module):
         super(MetaLearner, self).__init__()
         
         self.transductive_net = TransductiveLearner(input_dim, hidden_dim, embedding_dim, num_classes)
-        self.meta_optimizer = optim.Adam(self.parameters(), lr=0.001)
+        self.meta_optimizer = optim.AdamW(self.parameters(), lr=0.001, weight_decay=1e-4)
         
         # Meta-learning parameters
         self.inner_lr = 0.01
@@ -586,7 +586,7 @@ class TransductiveFewShotModel(nn.Module):
         
         # Test-time training parameters
         self.ttt_lr = 0.001
-        self.ttt_steps = 10
+        self.ttt_steps = 18
         self.ttt_threshold = 0.1  # Confidence threshold for test-time training
         
         # Zero-day detection parameters

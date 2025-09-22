@@ -54,8 +54,8 @@ class BlockchainFederatedClient:
         self.model = create_gan_tcn_model().to(device)
         
         # Initialize optimizers with better learning rates for convergence
-        self.optimizer_g = optim.Adam(self.model.generator.parameters(), lr=0.0001, betas=(0.5, 0.999), weight_decay=1e-4)
-        self.optimizer_d = optim.Adam(self.model.discriminator.parameters(), lr=0.0001, betas=(0.5, 0.999), weight_decay=1e-4)
+        self.optimizer_g = optim.AdamW(self.model.generator.parameters(), lr=0.0001, betas=(0.5, 0.999), weight_decay=1e-4)
+        self.optimizer_d = optim.AdamW(self.model.discriminator.parameters(), lr=0.0001, betas=(0.5, 0.999), weight_decay=1e-4)
         
         # Training history
         self.training_history = []

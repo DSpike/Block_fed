@@ -583,7 +583,7 @@ class BlockchainFederatedClient:
         logger.info(f"Client {self.client_id}: Using fallback basic training")
         
         # Set up training
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         
         # Calculate class weights to handle class imbalance
         class_counts = torch.bincount(self.train_labels)

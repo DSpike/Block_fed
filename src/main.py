@@ -103,7 +103,7 @@ class EnhancedSystemConfig:
     # Data configuration
     data_path: str = "UNSW_NB15_training-set.csv"
     test_path: str = "UNSW_NB15_testing-set.csv"
-    zero_day_attack: str = "Exploits"
+    zero_day_attack: str = "DoS"
     
     # Model configuration (restored to best performing)
     input_dim: int = 25
@@ -112,7 +112,7 @@ class EnhancedSystemConfig:
     
     # Federated learning configuration (optimized for quick testing with increased shots)
     num_clients: int = 3
-    num_rounds: int = 3  # Reduced for quick testing
+    num_rounds: int = 6  # Increased rounds for better convergence
     local_epochs: int = 6  # Reduced for quick testing
     learning_rate: float = 0.001
     
@@ -1685,7 +1685,7 @@ class BlockchainFederatedIncentiveSystem:
             adapted_model.train()
             
             # Enhanced optimizer setup with adaptive learning rate
-            ttt_optimizer = torch.optim.Adam(adapted_model.parameters(), lr=0.001, weight_decay=1e-5)
+            ttt_optimizer = torch.optim.AdamW(adapted_model.parameters(), lr=0.001, weight_decay=1e-4)
             
             # Learning rate scheduler for adaptive TTT
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -1693,7 +1693,7 @@ class BlockchainFederatedIncentiveSystem:
             )
             
             # Enhanced test-time training loop (restored to good performance)
-            ttt_steps = 10  # Restored to good performance
+            ttt_steps = 18  # Increased TTT steps for better adaptation
             ttt_losses = []
             ttt_support_losses = []
             ttt_consistency_losses = []
@@ -1844,7 +1844,7 @@ def main():
     # Create enhanced system configuration (using class defaults with increased training)
     config = EnhancedSystemConfig(
         num_clients=3,
-        num_rounds=3,  # Reduced for quick testing
+        num_rounds=6,  # Increased rounds for better convergence
         local_epochs=6,  # Reduced for quick testing
         learning_rate=0.001,
         enable_incentives=True,

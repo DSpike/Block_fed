@@ -239,7 +239,7 @@ class SimpleFederatedClient:
         """Fallback to basic training if enhanced training fails"""
         logger.info(f"Client {self.client_id}: Using fallback basic training")
         
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
         criterion = torch.nn.CrossEntropyLoss()
         
         self.model.train()
