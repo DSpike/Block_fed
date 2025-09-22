@@ -317,7 +317,7 @@ class BlockchainFederatedIncentiveSystem:
             self._setup_client_addresses()
             
             # 10. Initialize performance visualizer
-            self.visualizer = PerformanceVisualizer(output_dir="performance_plots")
+            self.visualizer = PerformanceVisualizer(output_dir="performance_plots", attack_name=self.config.zero_day_attack)
             
             self.is_initialized = True
             logger.info("✅ Enhanced system initialization completed successfully!")
@@ -1191,12 +1191,7 @@ class BlockchainFederatedIncentiveSystem:
             except Exception as e:
                 logger.warning(f"Training history plot failed: {str(e)}")
             
-            try:
-                # Zero-day detection plot
-                plot_paths['zero_day_detection'] = self.visualizer.plot_zero_day_detection_metrics(evaluation_results)
-                logger.info("✅ Zero-day detection plot completed")
-            except Exception as e:
-                logger.warning(f"Zero-day detection plot failed: {str(e)}")
+            # Zero-day detection plot removed - not properly plotting
             
             try:
                 # Confusion matrices for both base and TTT models

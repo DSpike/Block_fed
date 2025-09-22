@@ -29,19 +29,35 @@ class PerformanceVisualizer:
     Comprehensive performance visualization for blockchain federated learning system
     """
     
-    def __init__(self, output_dir: str = "performance_plots"):
+    def __init__(self, output_dir: str = "performance_plots", attack_name: str = ""):
         """
         Initialize the performance visualizer
         
         Args:
             output_dir: Directory to save plots
+            attack_name: Name of the attack type for plot identification
         """
         self.output_dir = output_dir
+        self.attack_name = attack_name
         # Use fixed filenames to avoid accumulation
         self.timestamp = "latest"
         
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
+    
+    def _get_filename(self, plot_type: str) -> str:
+        """Generate filename including attack name"""
+        if self.attack_name:
+            return f"{plot_type}_{self.attack_name}_{self.timestamp}.png"
+        else:
+            return f"{plot_type}_{self.timestamp}.png"
+    
+    def _get_title_suffix(self) -> str:
+        """Generate title suffix including attack name"""
+        if self.attack_name:
+            return f" ({self.attack_name} Attack)"
+        else:
+            return ""
         
         # Set IEEE top-tier paper standard parameters
         plt.rcParams.update({
@@ -83,7 +99,7 @@ class PerformanceVisualizer:
         
         # Plot training loss
         ax1.plot(epochs, training_history['epoch_losses'], 'b-', linewidth=2, marker='o', markersize=6)
-        ax1.set_title('Federated Training Loss Over Rounds', fontweight='bold', fontfamily='Times New Roman')
+        ax1.set_title(f'Federated Training Loss Over Rounds{self._get_title_suffix()}', fontweight='bold', fontfamily='Times New Roman')
         ax1.set_xlabel('Round', fontfamily='Times New Roman')
         ax1.set_ylabel('Average Loss', fontfamily='Times New Roman')
         ax1.grid(True, alpha=0.3)
@@ -112,7 +128,7 @@ class PerformanceVisualizer:
         plt.tight_layout()
         
         if save:
-            plot_path = os.path.join(self.output_dir, f"training_history_{self.timestamp}.png")
+            plot_path = os.path.join(self.output_dir, self._get_filename("training_history"))
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             logger.info(f"Training history plot saved: {plot_path}")
         
@@ -414,94 +430,7 @@ class PerformanceVisualizer:
         plt.close()  # Close figure instead of showing it
         return plot_path if save else ""
     
-    def plot_zero_day_detection_metrics(self, evaluation_results: Dict, save: bool = True) -> str:
-        """
-        Plot zero-day detection performance metrics
-        
-        Args:
-            evaluation_results: Dictionary with evaluation metrics
-            save: Whether to save the plot
-            
-        Returns:
-            plot_path: Path to saved plot
-        """
-        if not evaluation_results:
-            logger.warning("No evaluation results provided for plotting")
-            return ""
-        
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
-        
-        # Extract metrics
-        accuracy = evaluation_results.get('accuracy', 0)
-        precision = evaluation_results.get('precision', 0)
-        recall = evaluation_results.get('recall', 0)
-        f1_score = evaluation_results.get('f1_score', 0)
-        roc_auc = evaluation_results.get('roc_auc', 0)
-        zero_day_rate = evaluation_results.get('zero_day_detection_rate', 0)
-        avg_confidence = evaluation_results.get('avg_confidence', 0)
-        
-        # Plot classification metrics
-        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'ROC-AUC']
-        values = [accuracy, precision, recall, f1_score, roc_auc]
-        colors = ['skyblue', 'lightgreen', 'lightcoral', 'gold', 'plum']
-        
-        bars = ax1.bar(metrics, values, color=colors, alpha=0.8)
-        ax1.set_title('Zero-Day Detection Classification Metrics', fontweight='bold')
-        ax1.set_ylabel('Score')
-        ax1.set_ylim(0, 1.1)
-        ax1.tick_params(axis='x', rotation=45)
-        
-        # Add value labels on bars with professional formatting
-        for bar, value in zip(bars, values):
-            height = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2., height + 0.015,
-                    f'{value:.3f}', ha='center', va='bottom', 
-                    fontsize=9, fontweight='bold', fontfamily='Times New Roman',
-                    bbox=dict(boxstyle='round,pad=0.15', facecolor='white', alpha=0.9, 
-                             edgecolor='black', linewidth=0.5))
-        
-        # Plot zero-day detection rate
-        ax2.pie([zero_day_rate, 1-zero_day_rate], 
-                labels=['Zero-Day Detected', 'Normal/Attack'], 
-                autopct='%1.1f%%', 
-                colors=['red', 'lightblue'],
-                startangle=90)
-        ax2.set_title('Zero-Day Detection Distribution', fontweight='bold')
-        
-        # Plot confidence distribution
-        confidence_data = [avg_confidence, 1-avg_confidence]
-        ax3.bar(['High Confidence', 'Low Confidence'], confidence_data, 
-                color=['green', 'orange'], alpha=0.7)
-        ax3.set_title('Confidence Distribution', fontweight='bold')
-        ax3.set_ylabel('Proportion')
-        ax3.set_ylim(0, 1.1)
-        
-        # Add confidence value labels
-        for i, v in enumerate(confidence_data):
-            ax3.text(i, v + 0.01, f'{v:.3f}', ha='center', va='bottom', fontweight='bold')
-        
-        # Plot performance summary
-        summary_metrics = ['Detection Rate', 'Avg Confidence', 'F1-Score']
-        summary_values = [zero_day_rate, avg_confidence, f1_score]
-        
-        ax4.barh(summary_metrics, summary_values, color=['red', 'orange', 'green'], alpha=0.7)
-        ax4.set_title('Zero-Day Detection Summary', fontweight='bold')
-        ax4.set_xlabel('Score')
-        ax4.set_xlim(0, 1.1)
-        
-        # Add value labels
-        for i, v in enumerate(summary_values):
-            ax4.text(v + 0.01, i, f'{v:.3f}', va='center', fontweight='bold')
-        
-        plt.tight_layout()
-        
-        if save:
-            plot_path = os.path.join(self.output_dir, f"zero_day_detection_{self.timestamp}.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Zero-day detection plot saved: {plot_path}")
-        
-        plt.close()  # Close figure instead of showing it
-        return plot_path if save else ""
+    # plot_zero_day_detection_metrics method removed - not properly plotting
     
     def plot_client_performance(self, client_results: List[Dict], save: bool = True) -> str:
         """
@@ -1219,9 +1148,13 @@ class PerformanceVisualizer:
         x = np.arange(len(base_metrics))
         width = 0.35
         
-        bars1 = ax1.bar(x - width/2, base_values, width, label='Base Model', 
+        # Add attack name to labels if available
+        base_label = f'Base Model [{self.attack_name}]' if self.attack_name else 'Base Model'
+        ttt_label = f'TTT Model [{self.attack_name}]' if self.attack_name else 'TTT Model'
+        
+        bars1 = ax1.bar(x - width/2, base_values, width, label=base_label, 
                        color='skyblue', alpha=0.8, edgecolor='black', linewidth=0.5)
-        bars2 = ax1.bar(x + width/2, ttt_values, width, label='TTT Model', 
+        bars2 = ax1.bar(x + width/2, ttt_values, width, label=ttt_label, 
                        color='lightcoral', alpha=0.8, edgecolor='black', linewidth=0.5)
         
         # Add value labels with professional formatting
@@ -1256,7 +1189,9 @@ class PerformanceVisualizer:
         
         ax1.set_xlabel('Performance Metrics', fontsize=11, fontweight='bold', fontfamily='Times New Roman')
         ax1.set_ylabel('Score', fontsize=11, fontweight='bold', fontfamily='Times New Roman')
-        ax1.set_title('Performance Comparison: Base vs TTT Model', fontsize=13, fontweight='bold', 
+        # Add attack name to main title
+        title_suffix = f" ({self.attack_name} Attack)" if self.attack_name else ""
+        ax1.set_title(f'Performance Comparison: Base vs TTT Model{title_suffix}', fontsize=13, fontweight='bold', 
                      pad=15, fontfamily='Times New Roman')
         ax1.set_xticks(x)
         # Fix MCCC label to MCC
@@ -1322,7 +1257,7 @@ class PerformanceVisualizer:
         plt.tight_layout()
         
         if save:
-            plot_path = os.path.join(self.output_dir, f"performance_comparison_annotated_{self.timestamp}.png")
+            plot_path = os.path.join(self.output_dir, self._get_filename("performance_comparison_annotated"))
             plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
             logger.info(f"Performance comparison plot with annotations saved: {plot_path}")
         
@@ -1517,7 +1452,7 @@ def main():
     # Generate all plots
     visualizer.plot_training_history(example_data['training_history'])
     visualizer.plot_federated_rounds(example_data['round_results'])
-    visualizer.plot_zero_day_detection_metrics(example_data['evaluation_results'])
+    # visualizer.plot_zero_day_detection_metrics(example_data['evaluation_results'])  # Removed - not properly plotting
     visualizer.plot_client_performance(example_data['client_results'])
     visualizer.plot_blockchain_metrics(example_data['blockchain_data'])
     visualizer.create_comprehensive_report(example_data)
