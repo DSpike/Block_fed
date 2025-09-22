@@ -175,7 +175,7 @@ class BlockchainIncentiveContract:
             funded_account = self.web3.eth.default_account
             
             # Build transaction
-            tx = self.contract.functions.registerParticipant(participant_address, "client").build_transaction({
+            tx = self.contract.functions.registerParticipant(participant_address).build_transaction({
                 'from': funded_account,
                 'gas': 100000,
                 'gasPrice': self.web3.eth.gas_price,

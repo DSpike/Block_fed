@@ -586,7 +586,7 @@ class TransductiveFewShotModel(nn.Module):
         
         # Test-time training parameters
         self.ttt_lr = 0.001
-        self.ttt_steps = 18
+        self.ttt_steps = 21
         self.ttt_threshold = 0.1  # Confidence threshold for test-time training
         
         # Zero-day detection parameters

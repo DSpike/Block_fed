@@ -1693,7 +1693,7 @@ class BlockchainFederatedIncentiveSystem:
             )
             
             # Enhanced test-time training loop (restored to good performance)
-            ttt_steps = 18  # Increased TTT steps for better adaptation
+            ttt_steps = 21  # Further increased TTT steps for enhanced adaptation
             ttt_losses = []
             ttt_support_losses = []
             ttt_consistency_losses = []
