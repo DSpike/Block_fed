@@ -178,10 +178,29 @@ class RealGasCollector:
                     'percentage': (sum(gas_values) / total_gas_used) * 100
                 }
             
-            # Get round data
+            # Get round data (avoid deadlock by not calling get_round_gas_data while holding lock)
             rounds_data = {}
             for round_num in self.round_data.keys():
-                rounds_data[round_num] = self.get_round_gas_data(round_num)
+                round_transactions = self.round_data.get(round_num, [])
+                if round_transactions:
+                    total_gas = sum(tx.gas_used for tx in round_transactions)
+                    rounds_data[round_num] = {
+                        'round_number': round_num,
+                        'total_transactions': len(round_transactions),
+                        'total_gas_used': total_gas,
+                        'average_gas_used': total_gas / len(round_transactions) if round_transactions else 0,
+                        'transaction_types': {},
+                        'transactions': [{'transaction_hash': tx.transaction_hash, 'transaction_type': tx.transaction_type, 'gas_used': tx.gas_used, 'block_number': tx.block_number, 'round_number': tx.round_number, 'client_id': tx.client_id, 'ipfs_cid': tx.ipfs_cid, 'timestamp': tx.timestamp, 'success': tx.success} for tx in round_transactions]
+                    }
+                else:
+                    rounds_data[round_num] = {
+                        'round_number': round_num,
+                        'total_transactions': 0,
+                        'total_gas_used': 0,
+                        'average_gas_used': 0,
+                        'transaction_types': {},
+                        'transactions': []
+                    }
             
             return {
                 'total_transactions': total_transactions,

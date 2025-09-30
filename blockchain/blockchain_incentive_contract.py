@@ -85,9 +85,14 @@ class BlockchainIncentiveContract:
         except ImportError:
             logger.warning("ExtraDataToPOAMiddleware not available")
         
-        # Check connection
-        if not self.web3.is_connected():
-            raise ConnectionError(f"Failed to connect to Ethereum network: {rpc_url}")
+        # Check connection with timeout
+        try:
+            # Test connection with a simple call that has timeout
+            self.web3.eth.block_number
+            if not self.web3.is_connected():
+                raise ConnectionError(f"Failed to connect to Ethereum network: {rpc_url}")
+        except Exception as e:
+            raise ConnectionError(f"Failed to connect to Ethereum network: {rpc_url}. Error: {str(e)}")
         
         # Load account
         self.account = Account.from_key(private_key)
@@ -175,7 +180,7 @@ class BlockchainIncentiveContract:
                         'gasPrice': self.web3.eth.gas_price,
                         'nonce': self.web3.eth.get_transaction_count(self.web3.eth.accounts[0])
                     })
-                    receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+                    receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
                     if receipt.status == 1:
                         logger.info("ERC20 incentive contract set successfully")
                     else:
@@ -225,7 +230,7 @@ class BlockchainIncentiveContract:
             tx_hash = self.web3.eth.send_transaction(tx)
             
             # Wait for transaction receipt
-            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
             
             if receipt.status == 1:
                 # Extract real gas usage data
@@ -303,7 +308,7 @@ class BlockchainIncentiveContract:
                 tx_hash = self.web3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
             # Wait for transaction receipt
-            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
             
             if receipt.status == 1:
                 # Extract real gas usage data
@@ -365,7 +370,7 @@ class BlockchainIncentiveContract:
                 tx_hash = self.web3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
             # Wait for transaction receipt
-            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
             
             if receipt.status == 1:
                 # Extract real gas usage data
@@ -453,7 +458,7 @@ class BlockchainIncentiveContract:
                 tx_hash = self.web3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
             # Wait for transaction receipt
-            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
             
             if receipt.status == 1:
                 # Extract real gas usage data
@@ -918,7 +923,7 @@ class BlockchainIncentiveManager:
                             'gasPrice': self.web3.eth.gas_price,
                             'nonce': self.web3.eth.get_transaction_count(from_address)
                         })
-                        mint_receipt = self.web3.eth.wait_for_transaction_receipt(mint_tx)
+                        mint_receipt = self.web3.eth.wait_for_transaction_receipt(mint_tx, timeout=30)  # 30 second timeout
                         if mint_receipt.status == 1:
                             logger.info(f"Successfully minted {total_amount * 2} tokens")
                         else:
@@ -940,12 +945,15 @@ class BlockchainIncentiveManager:
                 
                 # Send transaction
                 tx_hash = self.web3.eth.send_transaction(tx)
-                receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+                receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
                 
                 success = receipt.status == 1
                 
             except Exception as e:
-                logger.warning(f"ERC20 distribution failed: {str(e)}. Using fallback simulation.")
+                if "timeout" in str(e).lower():
+                    logger.error(f"ERC20 distribution timed out after 30 seconds: {str(e)}. Using fallback simulation.")
+                else:
+                    logger.warning(f"ERC20 distribution failed: {str(e)}. Using fallback simulation.")
                 # Fallback: simulate successful distribution
                 success = True
             

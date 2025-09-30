@@ -337,7 +337,7 @@ class EthereumClient:
             tx_hash = self.web3.eth.send_transaction(tx)
             
             # Wait for transaction receipt
-            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
             
             if receipt.status == 1:
                 # Extract real gas usage data
@@ -402,7 +402,7 @@ class EthereumClient:
             tx_hash = self.web3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
             # Wait for transaction receipt
-            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
             
             if receipt.status == 1:
                 # Extract real gas usage data
@@ -539,7 +539,7 @@ class EthereumClient:
             tx_hash = self.web3.eth.send_transaction(tx)
             
             # Wait for transaction receipt
-            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)  # 30 second timeout
             
             if receipt.status == 1:
                 # Extract real gas usage data

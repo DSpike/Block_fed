@@ -447,7 +447,7 @@ class PerformanceVisualizer:
             logger.warning("No client results provided for plotting")
             return ""
         
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
         
         # Extract client data
         client_ids = [r.get('client_id', f'Client_{i}') for i, r in enumerate(client_results)]
@@ -461,7 +461,6 @@ class PerformanceVisualizer:
         ax1.set_title('Client Accuracy Comparison', fontweight='bold')
         ax1.set_ylabel('Accuracy')
         ax1.set_ylim(0, 1.1)
-        ax1.tick_params(axis='x', rotation=45)
         
         # Add value labels
         for bar, value in zip(bars1, accuracies):
@@ -474,7 +473,6 @@ class PerformanceVisualizer:
         ax2.set_title('Client F1-Score Comparison', fontweight='bold')
         ax2.set_ylabel('F1-Score')
         ax2.set_ylim(0, 1.1)
-        ax2.tick_params(axis='x', rotation=45)
         
         # Add value labels
         for bar, value in zip(bars2, f1_scores):
@@ -482,32 +480,19 @@ class PerformanceVisualizer:
             ax2.text(bar.get_x() + bar.get_width()/2., height + 0.01,
                     f'{value:.3f}', ha='center', va='bottom', fontweight='bold')
         
-        # Plot precision vs recall
-        ax3.scatter(precisions, recalls, s=100, alpha=0.7, c=range(len(client_ids)), cmap='viridis')
-        for i, client_id in enumerate(client_ids):
-            ax3.annotate(client_id, (precisions[i], recalls[i]), 
-                        xytext=(5, 5), textcoords='offset points', fontsize=8)
-        ax3.set_title('Precision vs Recall by Client', fontweight='bold')
-        ax3.set_xlabel('Precision')
-        ax3.set_ylabel('Recall')
-        ax3.set_xlim(0, 1.1)
-        ax3.set_ylim(0, 1.1)
-        ax3.grid(True, alpha=0.3)
-        
-        # Plot performance radar chart (simplified as bar chart)
+        # Plot average performance across all clients
         metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
         avg_values = [np.mean(accuracies), np.mean(precisions), np.mean(recalls), np.mean(f1_scores)]
         
-        bars4 = ax4.bar(metrics, avg_values, color=['skyblue', 'lightgreen', 'lightcoral', 'gold'], alpha=0.8)
-        ax4.set_title('Average Performance Across All Clients', fontweight='bold')
-        ax4.set_ylabel('Score')
-        ax4.set_ylim(0, 1.1)
-        ax4.tick_params(axis='x', rotation=45)
+        bars3 = ax3.bar(metrics, avg_values, color=['skyblue', 'lightgreen', 'lightcoral', 'gold'], alpha=0.8)
+        ax3.set_title('Average Performance Across All Clients', fontweight='bold')
+        ax3.set_ylabel('Score')
+        ax3.set_ylim(0, 1.1)
         
         # Add value labels
-        for bar, value in zip(bars4, avg_values):
+        for bar, value in zip(bars3, avg_values):
             height = bar.get_height()
-            ax4.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+            ax3.text(bar.get_x() + bar.get_width()/2., height + 0.01,
                     f'{value:.3f}', ha='center', va='bottom', fontweight='bold')
         
         plt.tight_layout()
@@ -568,6 +553,46 @@ class PerformanceVisualizer:
         if not blockchain_data:
             logger.warning("No blockchain data provided for plotting")
             return ""
+        
+        # Check if we have real data or empty data
+        gas_used = blockchain_data.get('gas_used', [])
+        logger.info(f"🔍 DEBUG: plot_blockchain_metrics - gas_used type: {type(gas_used)}, length: {len(gas_used) if hasattr(gas_used, '__len__') else 'no length'}, value: {gas_used}")
+        if not gas_used:
+            logger.warning("No gas usage data available - blockchain transactions may not have been recorded")
+            # Create empty plot with message
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
+            fig.suptitle('Blockchain Metrics - No Data Available', fontsize=16, fontweight='bold')
+            
+            ax1.text(0.5, 0.5, 'No Gas Data\nAvailable', ha='center', va='center', fontsize=14, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.8))
+            ax1.set_title('Gas Usage', fontweight='bold')
+            ax1.set_xlim(0, 1)
+            ax1.set_ylim(0, 1)
+            ax1.axis('off')
+            
+            ax2.text(0.5, 0.5, 'No IPFS Data\nAvailable', ha='center', va='center', fontsize=14, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.8))
+            ax2.set_title('IPFS Storage', fontweight='bold')
+            ax2.set_xlim(0, 1)
+            ax2.set_ylim(0, 1)
+            ax2.axis('off')
+            
+            ax3.text(0.5, 0.5, 'No Transaction\nData Available', ha='center', va='center', fontsize=14, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.8))
+            ax3.set_title('Transaction Count', fontweight='bold')
+            ax3.set_xlim(0, 1)
+            ax3.set_ylim(0, 1)
+            ax3.axis('off')
+            
+            plt.tight_layout()
+            
+            if save:
+                plot_path = os.path.join(self.output_dir, f'blockchain_metrics_{self.timestamp}.png')
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+                logger.info(f"Empty blockchain metrics plot saved: {plot_path}")
+            
+            plt.close()
+            return plot_path if save else ""
         
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
         
@@ -642,20 +667,53 @@ class PerformanceVisualizer:
         transactions = blockchain_data.get('transactions', [])
         transaction_types = blockchain_data.get('transaction_types', [])
         rounds = blockchain_data.get('rounds', [])
+        logger.info(f"🔍 DEBUG: plot_gas_usage_analysis - gas_used: {gas_used}, transactions: {len(transactions)}, types: {len(transaction_types)}, rounds: {len(rounds)}")
         
-        # If no gas data, create sample data for demonstration
+        # If no gas data, return empty plot with warning
         if not gas_used:
-            # Create sample gas usage data based on typical federated learning operations
-            rounds_data = list(range(1, 6))  # 5 rounds
-            client_updates = [21000, 21000, 21000] * 5  # 3 clients per round
-            model_aggregations = [25000] * 5  # 1 aggregation per round
-            ipfs_storage = [15000] * 15  # 3 clients + 1 aggregator per round
+            logger.warning("No real gas data available for visualization - skipping gas usage analysis plot")
+            # Create empty plot with message
+            ax1.text(0.5, 0.5, 'No Gas Data Available\nReal blockchain transactions\nnot recorded during training', 
+                    ha='center', va='center', fontsize=14, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.8))
+            ax1.set_title('Gas Usage by Transaction Type - No Data', fontweight='bold')
+            ax1.set_xlim(0, 1)
+            ax1.set_ylim(0, 1)
+            ax1.axis('off')
             
-            gas_used = client_updates + model_aggregations + ipfs_storage
-            transaction_types = (['Client Update'] * 3 + ['Model Aggregation'] + ['IPFS Storage'] * 4) * 5
-            rounds = [f'Round {i}' for i in rounds_data for _ in range(8)]  # 8 transactions per round
+            ax2.text(0.5, 0.5, 'No Gas Data Available\nReal blockchain transactions\nnot recorded during training', 
+                    ha='center', va='center', fontsize=14, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.8))
+            ax2.set_title('Gas Usage by Round - No Data', fontweight='bold')
+            ax2.set_xlim(0, 1)
+            ax2.set_ylim(0, 1)
+            ax2.axis('off')
             
-            logger.info("Using sample gas usage data for demonstration")
+            ax3.text(0.5, 0.5, 'No Gas Data Available\nReal blockchain transactions\nnot recorded during training', 
+                    ha='center', va='center', fontsize=14, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.8))
+            ax3.set_title('Individual Transaction Gas Usage - No Data', fontweight='bold')
+            ax3.set_xlim(0, 1)
+            ax3.set_ylim(0, 1)
+            ax3.axis('off')
+            
+            ax4.text(0.5, 0.5, 'No Gas Data Available\nReal blockchain transactions\nnot recorded during training', 
+                    ha='center', va='center', fontsize=14, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.8))
+            ax4.set_title('Gas Usage Statistics - No Data', fontweight='bold')
+            ax4.set_xlim(0, 1)
+            ax4.set_ylim(0, 1)
+            ax4.axis('off')
+            
+            plt.tight_layout()
+            
+            if save:
+                plot_path = os.path.join(self.output_dir, f'gas_usage_analysis_{self.timestamp}.png')
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+                logger.info(f"Empty gas usage analysis plot saved: {plot_path}")
+            
+            plt.close()
+            return plot_path if save else ""
         
         # Plot 1: Gas Usage by Transaction Type
         if transaction_types:
