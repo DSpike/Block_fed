@@ -9,13 +9,13 @@ scikit-learn>=1.1.0
 pandas>=1.4.0
 
 # Blockchain and Web3
-web3>=6.0.0
+web3>=7.13.0
 eth-account>=0.8.0
 ipfshttpclient>=0.8.0a2
-base58>=2.1.0
+base58>=1.0.2,<2.0
 
 # Smart Contract Development
-solcx>=1.12.0
+py-solc-x>=2.0.4
 brownie-eth>=1.19.0
 
 # Cryptography
