@@ -136,3 +136,6 @@ print(f"Total gas used: {sum(tx.gas_used for tx in real_gas_collector.gas_transa
 real_gas_collector.export_to_json("performance_plots/real_gas_data.json")
 print("✅ Real gas data exported to performance_plots/real_gas_data.json")
 
+
+
+

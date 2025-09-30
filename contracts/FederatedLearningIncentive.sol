@@ -6,7 +6,18 @@ pragma solidity ^0.8.19;
  * @dev Smart contract for blockchain-based incentive mechanism in federated learning
  * Handles model contribution evaluation, token rewards, and transparent audit trails
  */
+// ERC20 Token contract interface
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+    function distributeRewards(address[] calldata recipients, uint256[] calldata amounts) external;
+}
+
 contract FederatedLearningIncentive {
+    
+    // ERC20 Token contract address
+    address public tokenContract;
     
     // Events
     event ModelContributionSubmitted(
@@ -133,11 +144,20 @@ contract FederatedLearningIncentive {
     }
     
     // Constructor
-    constructor(address _aggregator) {
+    constructor(address _aggregator, address _tokenContract) {
         owner = msg.sender;
         aggregator = _aggregator;
+        tokenContract = _tokenContract;
         currentRound = 0;
         totalParticipants = 0;
+    }
+    
+    /**
+     * @dev Set the token contract address
+     * @param _tokenContract Address of the ERC20 token contract
+     */
+    function setTokenContract(address _tokenContract) external onlyAggregator {
+        tokenContract = _tokenContract;
     }
     
     /**
@@ -278,6 +298,7 @@ contract FederatedLearningIncentive {
         
         uint256 totalDistributed = 0;
         
+        // Validate all contributions first
         for (uint256 i = 0; i < recipients.length; i++) {
             address recipient = recipients[i];
             uint256 amount = amounts[i];
@@ -285,11 +306,16 @@ contract FederatedLearningIncentive {
             require(contributions[roundNumber][recipient].verified, "Contribution not verified");
             require(contributions[roundNumber][recipient].tokenReward == amount, "Amount mismatch");
             
-            // Transfer tokens (assuming ERC20 token contract)
-            // In a real implementation, you would call the token contract's transfer function
-            // token.transfer(recipient, amount);
-            
             totalDistributed += amount;
+        }
+        
+        // Transfer tokens using ERC20 token contract (single call for all recipients)
+        IERC20(tokenContract).distributeRewards(recipients, amounts);
+        
+        // Emit events for each recipient
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address recipient = recipients[i];
+            uint256 amount = amounts[i];
             
             emit TokenRewardDistributed(
                 recipient,
@@ -441,7 +467,7 @@ contract FederatedLearningIncentive {
     /**
      * @dev Get participant information
      * @param participant Address of the participant
-     * @return participantInfo Participant information
+     * @return Participant information
      */
     function getParticipantInfo(address participant) external view returns (
         uint256 reputation,
@@ -466,7 +492,7 @@ contract FederatedLearningIncentive {
      * @dev Get contribution information
      * @param roundNumber Round number
      * @param contributor Address of the contributor
-     * @return contributionInfo Contribution information
+     * @return Contribution information
      */
     function getContributionInfo(uint256 roundNumber, address contributor) external view returns (
         bytes32 modelHash,
@@ -494,7 +520,7 @@ contract FederatedLearningIncentive {
     /**
      * @dev Get round information
      * @param roundNumber Round number
-     * @return roundInfo Round information
+     * @return Round information
      */
     function getRoundInfo(uint256 roundNumber) external view returns (
         uint256 totalContributors,
