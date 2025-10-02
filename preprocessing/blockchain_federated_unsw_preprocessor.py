@@ -219,7 +219,7 @@ class UNSWPreprocessor:
         logger.info(f"  Final shape after encoding: {df.shape}")
         return df
     
-    def step5_feature_selection(self, df: pd.DataFrame, target_col: str = 'label', n_features: int = 25) -> pd.DataFrame:
+    def step5_feature_selection(self, df: pd.DataFrame, target_col: str = 'label', n_features: int = 30) -> pd.DataFrame:
         """
         Step 5: Feature Selection using Pearson Correlation
         

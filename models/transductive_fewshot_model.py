@@ -87,20 +87,15 @@ class TransductiveLearner(nn.Module):
             nn.Dropout(0.1)
         )
         
-        # Embedding network
-        self.embedding_net = nn.Sequential(
+        # Integrated adaptive network (no separate classifier)
+        self.adaptive_net = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(hidden_dim // 2, embedding_dim)
-        )
-        
-        # Classification layer
-        self.classifier = nn.Sequential(
-            nn.Linear(embedding_dim, embedding_dim // 2),
+            nn.Linear(hidden_dim // 2, embedding_dim // 2),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(embedding_dim // 2, num_classes)
+            nn.Linear(embedding_dim // 2, num_classes)  # Direct classification output
         )
         
         # Transductive components
@@ -140,12 +135,35 @@ class TransductiveLearner(nn.Module):
         )
         embeddings = attended_embeddings.squeeze(1) + embeddings  # Residual connection
         
-        # Enhanced embedding processing
-        embeddings = self.embedding_net(embeddings)
-        
-        # Classification
-        logits = self.classifier(embeddings)
+        # Direct adaptive classification (no separate embedding step)
+        logits = self.adaptive_net(embeddings)
         return logits
+    
+    def get_embeddings(self, x):
+        """
+        Extract embeddings (features before final classification layer)
+        """
+        # Multi-scale feature extraction
+        scale_features = []
+        for extractor in self.feature_extractors:
+            scale_feat = extractor(x)
+            scale_features.append(scale_feat)
+        
+        # Fuse multi-scale features
+        fused_features = torch.cat(scale_features, dim=1)
+        embeddings = self.feature_fusion(fused_features)
+        
+        # Apply layer normalization
+        embeddings = self.layer_norm(embeddings)
+        
+        # Self-attention for global context
+        embeddings_reshaped = embeddings.unsqueeze(1)  # (batch_size, 1, embedding_dim)
+        attended_embeddings, _ = self.self_attention(
+            embeddings_reshaped, embeddings_reshaped, embeddings_reshaped
+        )
+        embeddings = attended_embeddings.squeeze(1) + embeddings  # Residual connection
+        
+        return embeddings
     
     def compute_similarity_graph(self, embeddings):
         """
@@ -213,9 +231,9 @@ class TransductiveLearner(nn.Module):
         support_y = support_y.to(device)
         test_x = test_x.to(device)
         
-        # Get embeddings
-        support_embeddings = self.embedding_net(support_x)
-        test_embeddings = self.embedding_net(test_x)
+        # Get embeddings (before final classification layer)
+        support_embeddings = self.get_embeddings(support_x)
+        test_embeddings = self.get_embeddings(test_x)
         
         # Compute prototypes from support set
         unique_labels = torch.unique(support_y)
@@ -315,12 +333,12 @@ class TransductiveLearner(nn.Module):
         """
         Compute enhanced transductive loss with multiple components
         """
-        # Classification loss on support set
-        support_logits = self.classifier(support_embeddings)
+        # Classification loss on support set (using adaptive network)
+        support_logits = self.adaptive_net(support_embeddings)
         support_loss = F.cross_entropy(support_logits, support_y)
         
-        # Consistency loss on test set
-        test_logits = self.classifier(test_embeddings)
+        # Consistency loss on test set (using adaptive network)
+        test_logits = self.adaptive_net(test_embeddings)
         consistency_loss = F.kl_div(
             F.log_softmax(test_logits, dim=1),
             test_predictions,
@@ -492,6 +510,12 @@ class MetaLearner(nn.Module):
     def forward(self, x):
         return self.transductive_net(x)
     
+    def get_embeddings(self, x):
+        """
+        Extract embeddings from the transductive network
+        """
+        return self.transductive_net.get_embeddings(x)
+    
     def meta_update(self, support_x, support_y, query_x, query_y):
         """
         Perform meta-update using support and query sets with transductive learning
@@ -506,8 +530,8 @@ class MetaLearner(nn.Module):
             loss: Meta-learning loss
         """
         # Get embeddings
-        support_embeddings = self.transductive_net(support_x)
-        query_embeddings = self.transductive_net(query_x)
+        support_embeddings = self.transductive_net.get_embeddings(support_x)
+        query_embeddings = self.transductive_net.get_embeddings(query_x)
         
         # Compute prototypes
         prototypes, prototype_labels = self.transductive_net.compute_prototypes(
@@ -550,7 +574,7 @@ class MetaLearner(nn.Module):
             adapted_optimizer.zero_grad()
             
             # Get embeddings
-            support_embeddings = adapted_model.transductive_net(support_x)
+            support_embeddings = adapted_model.transductive_net.get_embeddings(support_x)
             
             # Compute prototypes
             prototypes, prototype_labels = adapted_model.transductive_net.compute_prototypes(
@@ -595,6 +619,12 @@ class TransductiveFewShotModel(nn.Module):
         
     def forward(self, x):
         return self.meta_learner(x)
+    
+    def get_embeddings(self, x):
+        """
+        Extract embeddings from the model
+        """
+        return self.meta_learner.get_embeddings(x)
     
     def compute_confidence(self, embeddings, prototypes, prototype_labels):
         """
@@ -643,8 +673,8 @@ class TransductiveFewShotModel(nn.Module):
         support_y = support_y.to(device)
         
         # Get embeddings
-        test_embeddings = self.meta_learner(x)
-        support_embeddings = self.meta_learner(support_x)
+        test_embeddings = self.meta_learner.get_embeddings(x)
+        support_embeddings = self.meta_learner.get_embeddings(support_x)
         
         # Compute prototypes from support set
         prototypes, prototype_labels = self.meta_learner.transductive_net.compute_prototypes(
@@ -674,7 +704,7 @@ class TransductiveFewShotModel(nn.Module):
             # Re-classify with adapted model
             # Get the original test samples for low-confidence cases
             low_confidence_samples = x[low_confidence_mask]
-            adapted_embeddings = adapted_model(low_confidence_samples)
+            adapted_embeddings = adapted_model.get_embeddings(low_confidence_samples)
             adapted_predictions, adapted_distances = adapted_model.transductive_net.classify(
                 adapted_embeddings, prototypes, prototype_labels
             )

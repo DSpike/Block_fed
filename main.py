@@ -108,14 +108,14 @@ class EnhancedSystemConfig:
     zero_day_attack: str = "DoS"
     
     # Model configuration (restored to best performing)
-    input_dim: int = 25
+    input_dim: int = 30
     hidden_dim: int = 128
     embedding_dim: int = 64
     
-    # Federated learning configuration (optimized for quick testing with increased shots)
+    # Federated learning configuration (optimized for better performance)
     num_clients: int = 3
-    num_rounds: int = 6  # Increased rounds for better convergence
-    local_epochs: int = 6  # Reduced for quick testing
+    num_rounds: int = 8  # Increased rounds for better convergence
+    local_epochs: int = 50  # Increased for better performance
     learning_rate: float = 0.001
     
     # Blockchain configuration - Using REAL deployed contracts
@@ -214,7 +214,7 @@ class BlockchainFederatedIncentiveSystem:
             # 2. Initialize transductive few-shot model
             logger.info("Initializing transductive few-shot model...")
             self.model = TransductiveFewShotModel(
-                input_dim=25,  # Fixed to match actual feature count from preprocessing
+                input_dim=30,  # Fixed to match actual feature count from preprocessing
                 hidden_dim=self.config.hidden_dim,
                 embedding_dim=self.config.embedding_dim,
                 num_classes=2  # Binary classification for zero-day detection

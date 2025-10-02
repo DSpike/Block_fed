@@ -138,14 +138,14 @@ Select the most relevant features using statistical methods.
 
 1. **Pearson Correlation Analysis**: Calculate correlation between each feature and target
 2. **Statistical Significance Testing**: Filter features with p-value < 0.05
-3. **Top-N Selection**: Select top 25 features by absolute correlation
-4. **Fallback Strategy**: If <25 significant features, take top 25 regardless
+3. **Top-N Selection**: Select top 30 features by absolute correlation
+4. **Fallback Strategy**: If <30 significant features, take top 30 regardless
 
 ### **Selection Criteria:**
 
 - **Statistical Significance**: p < 0.05
 - **Correlation Strength**: Higher absolute correlation preferred
-- **Feature Count**: Exactly 25 features selected
+- **Feature Count**: Exactly 30 features selected
 
 ### **Output:**
 
@@ -239,16 +239,16 @@ attack_types = {
 2. **Step 2**: Feature engineering (45 → 49)
 3. **Step 3**: Data cleaning
 4. **Step 4**: Categorical encoding (49 → 67)
-5. **Step 5**: Feature selection (67 → 25)
+5. **Step 5**: Feature selection (67 → 30)
 6. **Step 6**: Feature scaling
 
 ### **Output:**
 
-- **Training Data**: 56,000 samples × 25 features
-- **Validation Data**: 56,000 samples × 25 features
-- **Test Data**: 74,000 samples × 25 features
+- **Training Data**: 56,000 samples × 30 features
+- **Validation Data**: 56,000 samples × 30 features
+- **Test Data**: 74,000 samples × 30 features
 - **Binary Labels**: 0=Normal, 1=Attack
-- **Feature Names**: List of 25 selected features
+- **Feature Names**: List of 30 selected features
 
 ---
 
@@ -267,7 +267,7 @@ attack_types = {
 ### **3. Statistical Feature Selection:**
 
 - Pearson correlation with significance testing
-- Exactly 25 features for optimal performance
+- Exactly 30 features for optimal performance
 
 ### **4. Zero-Day Holdout Strategy:**
 
