@@ -9,8 +9,7 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-import pandas as pd
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 import logging
 from datetime import datetime
 import os
@@ -208,227 +207,6 @@ class PerformanceVisualizer:
         plt.close()  # Close figure instead of showing it
         return plot_path if save else ""
     
-    def plot_confusion_matrices(self, evaluation_results: Dict, save: bool = True) -> str:
-        """
-        Plot confusion matrices with IEEE paper standards
-        
-        Args:
-            evaluation_results: Dictionary containing evaluation metrics
-            save: Whether to save the plot
-            
-        Returns:
-            plot_path: Path to saved plot
-        """
-        logger.info("Creating confusion matrices figure...")
-        
-        # IEEE Paper Standard Figure Setup
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), dpi=300)  # IEEE standard size
-        
-        # Get confusion matrix data
-        if 'confusion_matrix' in evaluation_results:
-            cm_data = evaluation_results['confusion_matrix']
-            tn, fp, fn, tp = cm_data['tn'], cm_data['fp'], cm_data['fn'], cm_data['tp']
-            
-            # Create confusion matrix array
-            cm = np.array([[tn, fp], [fn, tp]])
-            
-            # Calculate metrics
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-            f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-            
-            # Standard confusion matrix format with proper annotations
-            cm_annotated = np.array([
-                [f'{tn}\n(TN)', f'{fp}\n(FP)'],
-                [f'{fn}\n(FN)', f'{tp}\n(TP)']
-            ])
-            
-            # Plot confusion matrix
-            im1 = ax1.imshow(cm, interpolation='nearest', cmap='Blues', aspect='auto')
-            ax1.set_title('Confusion Matrix - Zero-Day Detection', fontweight='bold', fontsize=14)
-            
-            # Add text annotations
-            for i in range(2):
-                for j in range(2):
-                    ax1.text(j, i, cm_annotated[i, j], ha='center', va='center', 
-                            fontsize=12, fontweight='bold', color='white' if cm[i, j] > cm.max()/2 else 'black')
-            
-            # Set labels
-            ax1.set_xlabel('Predicted Label', fontweight='bold')
-            ax1.set_ylabel('True Label', fontweight='bold')
-            ax1.set_xticks([0, 1])
-            ax1.set_yticks([0, 1])
-            ax1.set_xticklabels(['Normal', 'Attack'])
-            ax1.set_yticklabels(['Normal', 'Attack'])
-            
-            # Add colorbar
-            cbar1 = plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
-            cbar1.set_label('Count', fontweight='bold')
-            
-            # Add metrics text box
-            metrics_text = f'Precision: {precision:.3f}\nRecall: {recall:.3f}\nF1-Score: {f1_score:.3f}\nSpecificity: {specificity:.3f}'
-            ax1.text(0.02, 0.98, metrics_text, transform=ax1.transAxes, fontsize=10,
-                    verticalalignment='top', bbox=dict(boxstyle='round,pad=0.5', facecolor='wheat', alpha=0.8))
-            
-            # Second subplot: Normalized confusion matrix
-            cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-            cm_normalized_annotated = np.array([
-                [f'{cm_normalized[0,0]:.3f}\n({tn})', f'{cm_normalized[0,1]:.3f}\n({fp})'],
-                [f'{cm_normalized[1,0]:.3f}\n({fn})', f'{cm_normalized[1,1]:.3f}\n({tp})']
-            ])
-            
-            im2 = ax2.imshow(cm_normalized, interpolation='nearest', cmap='Blues', aspect='auto')
-            ax2.set_title('Normalized Confusion Matrix', fontweight='bold', fontsize=14)
-            
-            # Add text annotations for normalized matrix
-            for i in range(2):
-                for j in range(2):
-                    ax2.text(j, i, cm_normalized_annotated[i, j], ha='center', va='center', 
-                            fontsize=12, fontweight='bold', color='white' if cm_normalized[i, j] > 0.5 else 'black')
-            
-            # Set labels
-            ax2.set_xlabel('Predicted Label', fontweight='bold')
-            ax2.set_ylabel('True Label', fontweight='bold')
-            ax2.set_xticks([0, 1])
-            ax2.set_yticks([0, 1])
-            ax2.set_xticklabels(['Normal', 'Attack'])
-            ax2.set_yticklabels(['Normal', 'Attack'])
-            
-            # Add colorbar
-            cbar2 = plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
-            cbar2.set_label('Proportion', fontweight='bold')
-            
-            # Add accuracy text box
-            accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0
-            accuracy_text = f'Accuracy: {accuracy:.3f}\nTotal Samples: {tp + tn + fp + fn}'
-            ax2.text(0.02, 0.98, accuracy_text, transform=ax2.transAxes, fontsize=10,
-                    verticalalignment='top', bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.8))
-            
-        else:
-            # No confusion matrix data available
-            ax1.text(0.5, 0.5, 'No Confusion Matrix Data Available', 
-                    ha='center', va='center', transform=ax1.transAxes, fontsize=14)
-            ax1.set_title('Confusion Matrix - No Data', fontweight='bold')
-            ax1.axis('off')
-            
-            ax2.text(0.5, 0.5, 'No Confusion Matrix Data Available', 
-                    ha='center', va='center', transform=ax2.transAxes, fontsize=14)
-            ax2.set_title('Normalized Confusion Matrix - No Data', fontweight='bold')
-            ax2.axis('off')
-        
-        plt.tight_layout()
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        plot_filename = f"confusion_matrices_{timestamp}.png"
-        plot_path = os.path.join(self.output_dir, plot_filename)
-        
-        if save:
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Confusion matrices plot saved: {plot_path}")
-        plt.close()  # Close figure instead of showing it
-        return plot_path if save else ""
-    
-    def plot_federated_rounds(self, round_results: List[Dict], save: bool = True) -> str:
-        """
-        Plot federated learning round performance
-        
-        Args:
-            round_results: List of round results with metrics
-            save: Whether to save the plot
-            
-        Returns:
-            plot_path: Path to saved plot
-        """
-        if not round_results:
-            logger.warning("No round results provided for plotting")
-            return ""
-        
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
-        
-        rounds = [r.get('round_number', i+1) for i, r in enumerate(round_results)]
-        
-        # Extract metrics from the correct structure
-        accuracies = []
-        losses = []
-        model_hashes = []
-        
-        for r in round_results:
-            if isinstance(r, dict) and 'client_updates' in r:
-                # Calculate average accuracy from client updates
-                client_accuracies = []
-                client_losses = []
-                for update in r['client_updates']:
-                    if hasattr(update, 'validation_accuracy'):
-                        client_accuracies.append(update.validation_accuracy)
-                    if hasattr(update, 'training_loss'):
-                        client_losses.append(update.training_loss)
-                
-                if client_accuracies:
-                    accuracies.append(sum(client_accuracies) / len(client_accuracies))
-                else:
-                    accuracies.append(0.0)
-                    
-                if client_losses:
-                    losses.append(sum(client_losses) / len(client_losses))
-                else:
-                    losses.append(0.0)
-                
-                # Get model hash from aggregation result
-                if 'aggregation_result' in r and hasattr(r['aggregation_result'], 'model_hash'):
-                    model_hashes.append(r['aggregation_result'].model_hash[:8])
-                else:
-                    model_hashes.append('')
-            else:
-                accuracies.append(0.0)
-                losses.append(0.0)
-                model_hashes.append('')
-        
-        # Plot accuracy over rounds
-        ax1.plot(rounds, accuracies, 'b-', linewidth=2, marker='o', markersize=8)
-        ax1.set_title('Federated Learning Accuracy Over Rounds', fontweight='bold')
-        ax1.set_xlabel('Round')
-        ax1.set_ylabel('Accuracy')
-        ax1.grid(True, alpha=0.3)
-        ax1.set_ylim(0, 1.1)
-        
-        # Plot loss over rounds
-        ax2.plot(rounds, losses, 'r-', linewidth=2, marker='s', markersize=8)
-        ax2.set_title('Average Loss Over Rounds', fontweight='bold')
-        ax2.set_xlabel('Round')
-        ax2.set_ylabel('Loss')
-        ax2.grid(True, alpha=0.3)
-        ax2.set_yscale('log')
-        
-        # Plot model hash changes (as a bar chart)
-        ax3.bar(rounds, [1] * len(rounds), color='skyblue', alpha=0.7)
-        ax3.set_title('Model Updates Per Round', fontweight='bold')
-        ax3.set_xlabel('Round')
-        ax3.set_ylabel('Model Updated')
-        ax3.set_ylim(0, 1.2)
-        
-        # Add model hash labels
-        for i, (round_num, hash_val) in enumerate(zip(rounds, model_hashes)):
-            ax3.text(round_num, 0.5, f"Hash: {hash_val}", 
-                    ha='center', va='center', rotation=90, fontsize=8)
-        
-        # Plot client participation
-        client_counts = [r.get('num_clients', 0) for r in round_results]
-        ax4.bar(rounds, client_counts, color='lightgreen', alpha=0.7)
-        ax4.set_title('Client Participation Per Round', fontweight='bold')
-        ax4.set_xlabel('Round')
-        ax4.set_ylabel('Number of Clients')
-        ax4.set_ylim(0, max(client_counts) + 1)
-        
-        plt.tight_layout()
-        
-        if save:
-            plot_path = os.path.join(self.output_dir, f"federated_rounds_{self.timestamp}.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Federated rounds plot saved: {plot_path}")
-        
-        plt.close()  # Close figure instead of showing it
-        return plot_path if save else ""
     
     # plot_zero_day_detection_metrics method removed - not properly plotting
     
@@ -522,7 +300,7 @@ class PerformanceVisualizer:
         fig, ax = plt.subplots(figsize=(8, 6))
         
         # Create heatmap
-        sns.heatmap(confusion_matrix_data, annot=True, fmt='d', cmap='Blues',
+        sns.heatmap(confusion_matrix_data, annot=True, fmt='d', cmap='Greens',
                    xticklabels=class_names, yticklabels=class_names, ax=ax)
         
         ax.set_title('Confusion Matrix - Zero-Day Detection', fontweight='bold', fontsize=14)
@@ -1502,8 +1280,9 @@ class PerformanceVisualizer:
             
             # Create bar chart with IEEE-standard styling
             bars = ax.bar(participant_names, token_amounts, 
-                         color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'][:len(participant_names)],
-                         alpha=0.8, edgecolor='black', linewidth=1.2)
+                         color=['#FCF4A4',  '#D1D0C8', '#6A642A', '#d62728', '#9467bd', '#8c564b'][:len(participant_names)],
+                         alpha=0.8, edgecolor='none', linewidth=1.2)
+                         
             
             ax.set_xlabel('Federated Learning Clients', fontsize=14, fontweight='bold', fontfamily='Times New Roman')
             ax.set_ylabel('Total Tokens Received', fontsize=14, fontweight='bold', fontfamily='Times New Roman')
