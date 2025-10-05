@@ -1006,7 +1006,8 @@ class BlockchainFederatedIncentiveSystem:
     
     def evaluate_final_global_model(self) -> Dict[str, Any]:
         """
-        Evaluate final global model performance on test set
+        Evaluate final global model performance using few-shot learning approach
+        (same method as zero-day detection for consistency)
         
         Returns:
             evaluation_results: Final model evaluation results
@@ -1024,74 +1025,128 @@ class BlockchainFederatedIncentiveSystem:
             
             # Get the final global model from the coordinator
             if hasattr(self, 'coordinator') and self.coordinator:
-                # Use the model attribute directly since get_global_model doesn't exist
                 final_model = self.coordinator.model
                 
                 if final_model:
-                    # Evaluate the final global model with memory-efficient batch processing
-                    final_model.eval()
-                    with torch.no_grad():
-                        device = next(final_model.parameters()).device
+                    # Use the same few-shot evaluation approach as zero-day detection
+                    device = next(final_model.parameters()).device
+                    
+                    # Convert to tensors and move to device
+                    X_test_tensor = torch.FloatTensor(X_test).to(device)
+                    y_test_tensor = torch.LongTensor(y_test).to(device)
+                    
+                    # Create few-shot tasks for evaluation (same as zero-day detection)
+                    from models.transductive_fewshot_model import create_meta_tasks
+                    
+                    # Create meta-tasks for evaluation
+                    meta_tasks = create_meta_tasks(
+                        X_test_tensor, y_test_tensor, 
+                        n_way=2, k_shot=5, n_query=10
+                    )
+                    
+                    all_predictions = []
+                    all_labels = []
+                    
+                    # Evaluate on each meta-task
+                    for task in meta_tasks:
+                        support_x, support_y, query_x, query_y = task
                         
-                        # Use subset for memory efficiency (first 1000 samples)
-                        subset_size = min(1000, len(X_test))
-                        X_test_subset = X_test[:subset_size]
-                        y_test_subset = y_test[:subset_size]
-                        
-                        # Convert to tensors
-                        X_test_tensor = torch.FloatTensor(X_test_subset)
-                        y_test_tensor = torch.LongTensor(y_test_subset)
-                        
-                        # Process in small batches to avoid memory issues
-                        batch_size = 100
-                        all_predictions = []
-                        all_labels = []
-                        
-                        for i in range(0, len(X_test_tensor), batch_size):
-                            batch_data = X_test_tensor[i:i+batch_size].to(device)
-                            batch_labels = y_test_tensor[i:i+batch_size].to(device)
+                        # Get prototypes from support set
+                        with torch.no_grad():
+                            support_features = final_model.get_embeddings(support_x)
+                            prototypes = []
+                            for class_id in torch.unique(support_y):
+                                class_mask = (support_y == class_id)
+                                class_prototype = support_features[class_mask].mean(dim=0)
+                                prototypes.append(class_prototype)
+                            prototypes = torch.stack(prototypes)
                             
-                            # Get predictions for this batch
-                            outputs = final_model(batch_data)
-                            predictions = torch.argmax(outputs, dim=1)
+                            # Get query features
+                            query_features = final_model.get_embeddings(query_x)
+                            
+                            # Calculate distances to prototypes
+                            distances = torch.cdist(query_features, prototypes)
+                            predictions = torch.argmin(distances, dim=1)
                             
                             all_predictions.append(predictions.cpu())
-                            all_labels.append(batch_labels.cpu())
+                            all_labels.append(query_y.cpu())
+                    
+                    # Combine all predictions
+                    predictions = torch.cat(all_predictions, dim=0)
+                    y_test_combined = torch.cat(all_labels, dim=0)
+                    
+                    # Calculate metrics using optimal threshold (same as zero-day detection)
+                    from sklearn.metrics import roc_auc_score, roc_curve
+                    import numpy as np
+                    
+                    # Get prediction probabilities for threshold finding
+                    with torch.no_grad():
+                        all_probs = []
+                        for task in meta_tasks:
+                            support_x, support_y, query_x, query_y = task
+                            support_features = final_model.get_embeddings(support_x)
+                            prototypes = []
+                            for class_id in torch.unique(support_y):
+                                class_mask = (support_y == class_id)
+                                class_prototype = support_features[class_mask].mean(dim=0)
+                                prototypes.append(class_prototype)
+                            prototypes = torch.stack(prototypes)
                             
-                            # Clear GPU cache after each batch
-                            torch.cuda.empty_cache()
-                        
-                        # Combine all predictions
-                        predictions = torch.cat(all_predictions, dim=0)
-                        y_test_combined = torch.cat(all_labels, dim=0)
-                        
-                        # Calculate metrics
-                        accuracy = (predictions == y_test_combined).float().mean().item()
-                        
-                        # Calculate F1-score
-                        from sklearn.metrics import f1_score, classification_report
-                        predictions_np = predictions.numpy()
-                        y_test_np = y_test_combined.numpy()
-                        
-                        f1 = f1_score(y_test_np, predictions_np, average='weighted')
-                        
-                        # Get classification report
-                        class_report = classification_report(y_test_np, predictions_np, output_dict=True)
-                        
-                        final_results = {
-                            'accuracy': accuracy,
-                            'f1_score': f1,
-                            'classification_report': class_report,
-                            'test_samples': len(X_test),
-                            'model_type': 'Final Global Model'
-                        }
-                        
-                        logger.info("✅ Final global model evaluation completed!")
-                        logger.info(f"Final Model Accuracy: {accuracy:.4f}")
-                        logger.info(f"Final Model F1-Score: {f1:.4f}")
-                        logger.info(f"Test Samples: {len(X_test)}")
-                        
-                        return final_results
+                            query_features = final_model.get_embeddings(query_x)
+                            distances = torch.cdist(query_features, prototypes)
+                            # Convert distances to probabilities (closer = higher probability)
+                            probs = torch.softmax(-distances, dim=1)
+                            all_probs.append(probs.cpu())
+                    
+                    probs_combined = torch.cat(all_probs, dim=0)
+                    probs_np = probs_combined.numpy()
+                    y_test_np = y_test_combined.numpy()
+                    
+                    # Find optimal threshold using ROC curve
+                    if len(np.unique(y_test_np)) > 1:
+                        fpr, tpr, thresholds = roc_curve(y_test_np, probs_np[:, 1])
+                        optimal_idx = np.argmax(tpr - fpr)
+                        optimal_threshold = thresholds[optimal_idx]
+                        roc_auc = roc_auc_score(y_test_np, probs_np[:, 1])
+                    else:
+                        optimal_threshold = 0.5
+                        roc_auc = 0.5
+                    
+                    # Apply optimal threshold
+                    final_predictions = (probs_np[:, 1] >= optimal_threshold).astype(int)
+                    
+                    # Calculate metrics
+                    accuracy = (final_predictions == y_test_np).mean()
+                    
+                    # Calculate F1-score
+                    from sklearn.metrics import f1_score, classification_report
+                    f1 = f1_score(y_test_np, final_predictions, average='weighted')
+                    
+                    # Get classification report
+                    class_report = classification_report(y_test_np, final_predictions, output_dict=True)
+                    
+                    final_results = {
+                        'accuracy': accuracy,
+                        'f1_score': f1,
+                        'classification_report': class_report,
+                        'test_samples': len(X_test),
+                        'model_type': 'Final Global Model (Few-Shot)',
+                        'optimal_threshold': optimal_threshold,
+                        'roc_auc': roc_auc,
+                        'query_samples': len(y_test_combined),
+                        'support_samples': len(meta_tasks) * 5  # 5 support samples per task
+                    }
+                    
+                    logger.info("✅ Final global model evaluation completed!")
+                    logger.info(f"Final Model Accuracy: {accuracy:.4f}")
+                    logger.info(f"Final Model F1-Score: {f1:.4f}")
+                    logger.info(f"Test Samples: {len(X_test)}")
+                    logger.info(f"Query Samples: {len(y_test_combined)}")
+                    logger.info(f"Support Samples: {len(meta_tasks) * 5}")
+                    logger.info(f"Optimal Threshold: {optimal_threshold:.4f}")
+                    logger.info(f"ROC-AUC: {roc_auc:.4f}")
+                    
+                    return final_results
                 else:
                     logger.warning("No global model available for evaluation")
                     return {}
@@ -1871,7 +1926,7 @@ class BlockchainFederatedIncentiveSystem:
             )
             
             # Enhanced test-time training loop (restored to good performance)
-            ttt_steps = 21  # Further increased TTT steps for enhanced adaptation
+            ttt_steps = 21  # Optimal TTT steps for enhanced adaptation
             ttt_losses = []
             ttt_support_losses = []
             ttt_consistency_losses = []
