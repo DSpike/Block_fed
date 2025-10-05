@@ -805,8 +805,11 @@ class BlockchainIncentiveManager:
                     logger.info(f"DEBUG: accuracy_improvement={accuracy_improvement} (type: {type(accuracy_improvement)})")
                     logger.info(f"DEBUG: About to calculate contribution_score = int(accuracy_improvement * 100)")
                     
+                    # Calculate contribution score with improved reward formula
                     contribution_score = int(accuracy_improvement * 100)  # Convert to percentage
-                    token_reward = int(contribution_score * 10)  # 10 tokens per percentage point
+                    base_reward = 50  # Reduced base reward for participation
+                    improvement_reward = max(0, contribution_score * 20)  # 20 tokens per percentage point (doubled)
+                    token_reward = base_reward + improvement_reward
                     
                     logger.info(f"DEBUG: contribution_score={contribution_score}, token_reward={token_reward}")
                     
@@ -1103,15 +1106,18 @@ class BlockchainIncentiveManager:
             is_verified: Whether contribution meets quality standards
         """
         try:
-            # Check if accuracy improvement is positive
-            if metrics.accuracy_improvement <= 0:
+            # More lenient verification - allow contributions even with no improvement
+            # Check minimum quality thresholds (very lenient)
+            min_accuracy_improvement = -1.0  # Allow even negative improvement
+            min_data_quality = 50.0  # 50% minimum data quality
+            min_reliability = 60.0   # 60% minimum reliability
+            
+            # Check if contribution meets minimum thresholds
+            if (metrics.accuracy_improvement < min_accuracy_improvement or
+                metrics.data_quality < min_data_quality or
+                metrics.reliability < min_reliability):
                 logger.warning(f"Contribution not verified: Accuracy={metrics.accuracy_improvement:.2f}%, Quality={metrics.data_quality:.2f}%, Reliability={metrics.reliability:.2f}%")
                 return False
-            
-            # Check minimum quality thresholds
-            min_accuracy_improvement = 0.1  # 0.1% minimum improvement
-            min_data_quality = 70.0  # 70% minimum data quality
-            min_reliability = 80.0   # 80% minimum reliability
             
             if (metrics.accuracy_improvement >= min_accuracy_improvement and 
                 metrics.data_quality >= min_data_quality and 
