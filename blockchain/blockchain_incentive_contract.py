@@ -348,18 +348,18 @@ class BlockchainIncentiveContract:
             # Convert Python bool to proper format for Solidity
             sol_verification_result = bool(verification_result)
             tx = self.contract.functions.evaluateContribution(
-                contributor_address,
+                    contributor_address,
                 round_number,
                 contribution_score,
                 token_reward,
                 sol_verification_result
-            ).build_transaction({
-                'from': from_address,
+                ).build_transaction({
+                    'from': from_address,
                 'gas': 150000,
-                'gasPrice': self.web3.eth.gas_price,
-                'nonce': self.web3.eth.get_transaction_count(from_address)
-            })
-            
+                    'gasPrice': self.web3.eth.gas_price,
+                    'nonce': self.web3.eth.get_transaction_count(from_address)
+                })
+                
             # SMART FIX: Use different signing approach based on mode
             if hasattr(self, 'use_funded_account_mode') and self.use_funded_account_mode:
                 # For funded account mode, let Ganache handle the signing
@@ -714,7 +714,8 @@ class BlockchainIncentiveManager:
         logger.info("Blockchain Incentive Manager initialized")
     
     def process_round_contributions(self, round_number: int, 
-                                  client_contributions: List[Dict[str, Any]]) -> List[RewardDistribution]:
+                                  client_contributions: List[Dict[str, Any]], 
+                                  shapley_values: Optional[Dict[str, float]] = None) -> List[RewardDistribution]:
         """
         Process all contributions for a round and calculate rewards
         
@@ -805,11 +806,22 @@ class BlockchainIncentiveManager:
                     logger.info(f"DEBUG: accuracy_improvement={accuracy_improvement} (type: {type(accuracy_improvement)})")
                     logger.info(f"DEBUG: About to calculate contribution_score = int(accuracy_improvement * 100)")
                     
-                    # Calculate contribution score with improved reward formula
-                    contribution_score = int(accuracy_improvement * 100)  # Convert to percentage
-                    base_reward = 50  # Reduced base reward for participation
-                    improvement_reward = max(0, contribution_score * 20)  # 20 tokens per percentage point (doubled)
-                    token_reward = base_reward + improvement_reward
+                    # Calculate contribution score with Shapley value-based reward formula
+                    if shapley_values and client_address in shapley_values:
+                        # Use Shapley value for fair distribution
+                        shapley_value = shapley_values[client_address]
+                        base_reward = 10  # Small base reward for participation
+                        shapley_reward = int(shapley_value * 1000)  # Scale Shapley value appropriately
+                        token_reward = base_reward + shapley_reward
+                        contribution_score = int(shapley_value * 100)  # For logging
+                        logger.info(f"Using Shapley value {shapley_value:.4f} for client {client_address}")
+                    else:
+                        # Fallback to old formula for backward compatibility
+                        contribution_score = int(accuracy_improvement * 100)  # Convert to percentage
+                        base_reward = 10  # Reduced base reward
+                        improvement_reward = max(0, contribution_score * 2)  # 2 tokens per percentage point
+                        token_reward = base_reward + improvement_reward
+                        logger.info(f"Using fallback formula for client {client_address}")
                     
                     logger.info(f"DEBUG: contribution_score={contribution_score}, token_reward={token_reward}")
                     
@@ -843,27 +855,27 @@ class BlockchainIncentiveManager:
                                 contribution_score = float(contribution_score)
                             else:
                                 contribution_score = 0.0
-                            
-                            reward_dist = RewardDistribution(
-                                recipient_address=client_address,
+                        
+                        reward_dist = RewardDistribution(
+                            recipient_address=client_address,
                                 token_amount=token_amount,
-                                round_number=round_number,
-                                contribution_score=contribution_score,
+                            round_number=round_number,
+                            contribution_score=contribution_score,
                                 reputation_multiplier=1.0,  # Will be calculated by contract
-                                transaction_hash="",  # Will be set after distribution
-                                timestamp=time.time()
-                            )
-                            
-                            reward_distributions.append(reward_dist)
-                            
-                            # Store in history
-                            with self.lock:
-                                self.contribution_history.append({
-                                    'round_number': round_number,
-                                    'client_address': client_address,
-                                    'metrics': metrics,
+                            transaction_hash="",  # Will be set after distribution
+                            timestamp=time.time()
+                        )
+                        
+                        reward_distributions.append(reward_dist)
+                    
+                    # Store in history
+                    with self.lock:
+                        self.contribution_history.append({
+                            'round_number': round_number,
+                            'client_address': client_address,
+                            'metrics': metrics,
                                     'reward': reward_dist
-                                })
+                        })
                 
             except Exception as e:
                 logger.error(f"Error processing contribution for {contribution.get('client_address', 'unknown')}: {str(e)}")
