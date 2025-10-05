@@ -707,6 +707,7 @@ class BlockchainIncentiveManager:
         self.token_contract = contract_client.token_contract  # Access to ERC20 token contract
         self.account = contract_client.account  # Access to account for transactions
         self.web3 = contract_client.web3  # Access to web3 instance
+        self.gas_collector = None  # Will be set by main system
         self.contribution_history = []
         self.reward_history = []
         self.lock = threading.Lock()
@@ -965,12 +966,9 @@ class BlockchainIncentiveManager:
                 success = receipt.status == 1
                 
             except Exception as e:
-                if "timeout" in str(e).lower():
-                    logger.error(f"ERC20 distribution timed out after 30 seconds: {str(e)}. Using fallback simulation.")
-                else:
-                    logger.warning(f"ERC20 distribution failed: {str(e)}. Using fallback simulation.")
-                # Fallback: simulate successful distribution
-                success = True
+                logger.error(f"ERC20 distribution failed: {str(e)}")
+                # NO FALLBACK SIMULATION - FAIL PROPERLY
+                return False
             
             if success:
                 # Store reward history
@@ -979,6 +977,27 @@ class BlockchainIncentiveManager:
                 
                 total_rewards = sum(rd.token_amount for rd in reward_distributions)
                 logger.info(f"Rewards distributed successfully: Round {round_number}, Total: {total_rewards} tokens")
+                
+                # Record gas usage for successful token distribution
+                if hasattr(self, 'gas_collector') and self.gas_collector:
+                    try:
+                        # Get transaction receipt to extract gas data
+                        if 'receipt' in locals() and receipt:
+                            self.gas_collector.record_transaction(
+                                tx_hash=receipt.transactionHash.hex(),
+                                tx_type="Token Distribution",
+                                gas_used=receipt.gasUsed,
+                                gas_limit=receipt.gasUsed,
+                                gas_price=0,
+                                block_number=receipt.blockNumber,
+                                round_number=round_number,
+                                client_id=None,  # System-wide operation
+                                ipfs_cid=None
+                            )
+                            logger.info(f"Recorded real gas transaction: Token Distribution - Gas: {receipt.gasUsed}, Block: {receipt.blockNumber}")
+                    except Exception as gas_error:
+                        logger.warning(f"Failed to record gas for token distribution: {gas_error}")
+                
                 return True
             else:
                 logger.error(f"Failed to distribute rewards for round {round_number}")

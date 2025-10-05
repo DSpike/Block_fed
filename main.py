@@ -182,6 +182,10 @@ class BlockchainFederatedIncentiveSystem:
         self.incentive_manager = None
         self.decentralized_system = None  # Initialize to prevent AttributeError
         
+        # Initialize gas collector for tracking blockchain costs
+        from blockchain.real_gas_collector import real_gas_collector
+        self.gas_collector = real_gas_collector
+        
         # System state
         self.is_initialized = False
         self.training_history = []
@@ -256,15 +260,22 @@ class BlockchainFederatedIncentiveSystem:
             # 7. Initialize blockchain incentive contract (if enabled)
             if self.config.enable_incentives:
                 logger.info("Initializing blockchain incentive contract...")
+                # Load incentive contract ABI from deployed contracts
+                with open('deployed_contracts.json', 'r') as f:
+                    deployed_contracts = json.load(f)
+                incentive_abi = deployed_contracts['contracts']['incentive_contract']['abi']
+                
                 self.incentive_contract = BlockchainIncentiveContract(
                     rpc_url=self.config.ethereum_rpc_url,
                     contract_address=self.config.incentive_contract_address,
-                    contract_abi=FEDERATED_LEARNING_ABI,  # Would use actual incentive contract ABI
+                    contract_abi=incentive_abi,  # Use actual incentive contract ABI
                     private_key=self.config.private_key,
                     aggregator_address=self.config.aggregator_address
                 )
                 
                 self.incentive_manager = BlockchainIncentiveManager(self.incentive_contract)
+                # Add gas collector to incentive manager
+                self.incentive_manager.gas_collector = self.gas_collector
             
             # 8. Initialize blockchain federated coordinator
             logger.info("Initializing blockchain federated coordinator...")
@@ -314,6 +325,13 @@ class BlockchainFederatedIncentiveSystem:
                     self.blockchain_integration.ethereum_client,
                     self.blockchain_integration.ipfs_client
                 )
+                
+                # Add gas collector to coordinator and all its components
+                from blockchain.real_gas_collector import real_gas_collector
+                self.coordinator.gas_collector = real_gas_collector
+                self.coordinator.aggregator.gas_collector = real_gas_collector
+                for client in self.coordinator.clients:
+                    client.gas_collector = real_gas_collector
                 logger.info("✅ Blockchain integration set for coordinator")
             else:
                 logger.warning("⚠️  No blockchain integration available for coordinator")
@@ -485,7 +503,7 @@ class BlockchainFederatedIncentiveSystem:
         num_epochs = len(client_meta_histories[0]['epoch_losses'])
         aggregated_losses = []
         aggregated_accuracies = []
-        
+            
         for epoch in range(num_epochs):
             # Average loss across clients for this epoch
             epoch_losses = [history['epoch_losses'][epoch] for history in client_meta_histories]
@@ -500,7 +518,7 @@ class BlockchainFederatedIncentiveSystem:
         return {
             'epoch_losses': aggregated_losses,
             'epoch_accuracies': aggregated_accuracies
-        }
+            }
     
     def run_federated_training_with_incentives(self) -> bool:
         """
@@ -787,6 +805,8 @@ class BlockchainFederatedIncentiveSystem:
                         total_tokens = sum(rd.token_amount for rd in reward_distributions)
                         logger.info(f"Incentives processed for round {round_num}: {len(reward_distributions)} rewards, Total: {total_tokens} tokens")
                         
+                        # Token distribution will be recorded on blockchain with real gas usage
+                        
                         # Store incentive data for visualization including individual rewards
                         individual_rewards = {}
                         for reward_dist in reward_distributions:
@@ -924,6 +944,7 @@ class BlockchainFederatedIncentiveSystem:
         
         # Import the real gas collector
         from blockchain.real_gas_collector import real_gas_collector
+        self.gas_collector = real_gas_collector
         
         # Get ALL gas data from the collector (not just specific round) with timeout protection
         try:
@@ -1146,6 +1167,11 @@ class BlockchainFederatedIncentiveSystem:
         try:
             logger.info("Evaluating final global model performance...")
             
+            # Set fixed random seed to ensure consistent evaluation
+            import numpy as np
+            torch.manual_seed(42)
+            np.random.seed(42)
+            
             # Get test data
             X_test = self.preprocessed_data['X_test']
             y_test = self.preprocessed_data['y_test']
@@ -1176,7 +1202,10 @@ class BlockchainFederatedIncentiveSystem:
                     
                     # Evaluate on each meta-task
                     for task in meta_tasks:
-                        support_x, support_y, query_x, query_y = task
+                        support_x = task['support_x']
+                        support_y = task['support_y']
+                        query_x = task['query_x']
+                        query_y = task['query_y']
                         
                         # Get prototypes from support set
                         with torch.no_grad():
@@ -1210,7 +1239,10 @@ class BlockchainFederatedIncentiveSystem:
                     with torch.no_grad():
                         all_probs = []
                         for task in meta_tasks:
-                            support_x, support_y, query_x, query_y = task
+                            support_x = task['support_x']
+                            support_y = task['support_y']
+                            query_x = task['query_x']
+                            query_y = task['query_y']
                             support_features = final_model.get_embeddings(support_x)
                             prototypes = []
                             for class_id in torch.unique(support_y):
@@ -1252,6 +1284,14 @@ class BlockchainFederatedIncentiveSystem:
                     # Get classification report
                     class_report = classification_report(y_test_np, final_predictions, output_dict=True)
                     
+                    # Calculate confusion matrix for visualization
+                    from sklearn.metrics import confusion_matrix
+                    cm = confusion_matrix(y_test_np, final_predictions)
+                    if cm.size == 4:
+                        tn, fp, fn, tp = cm.ravel()
+                    else:
+                        tn, fp, fn, tp = 0, 0, 0, 0
+                    
                     final_results = {
                         'accuracy': accuracy,
                         'f1_score': f1,
@@ -1261,7 +1301,9 @@ class BlockchainFederatedIncentiveSystem:
                         'optimal_threshold': optimal_threshold,
                         'roc_auc': roc_auc,
                         'query_samples': len(y_test_combined),
-                        'support_samples': len(meta_tasks) * 5  # 5 support samples per task
+                        'support_samples': len(meta_tasks) * 5,  # 5 support samples per task
+                        'confusion_matrix': {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)},
+                        'roc_curve': {'fpr': fpr.tolist(), 'tpr': tpr.tolist(), 'thresholds': thresholds.tolist()}
                     }
                     
                     logger.info("✅ Final global model evaluation completed!")
@@ -1825,9 +1867,38 @@ class BlockchainFederatedIncentiveSystem:
             zero_day_mask = torch.zeros(len(y_test), dtype=torch.bool)
             zero_day_mask[zero_day_indices] = True
             
-            # Evaluate Base Model (Transductive Few-Shot Learning only)
-            logger.info("📊 Evaluating Base Model (Transductive Few-Shot Learning)...")
-            base_results = self._evaluate_base_model(X_test_tensor, y_test_tensor, zero_day_mask)
+            # Evaluate Base Model (EXACT SAME as Final Global Model - no TTT)
+            logger.info("📊 Evaluating Base Model (Exact Same as Final Global Model)...")
+            
+            # Call the EXACT SAME method as Final Global Model evaluation
+            # This ensures 100% identical results
+            
+            # Call the EXACT SAME method as Final Global Model evaluation
+            # This ensures 100% identical results
+            
+            # Set fixed random seed to ensure identical evaluation
+            import numpy as np
+            torch.manual_seed(42)
+            np.random.seed(42)
+            
+            final_global_results = self.evaluate_final_global_model()
+            
+            # Convert final global model results to base model format
+            base_results = {
+                'accuracy': final_global_results.get('accuracy', 0.0),
+                'precision': final_global_results.get('classification_report', {}).get('1', {}).get('precision', 0.0),
+                'recall': final_global_results.get('classification_report', {}).get('1', {}).get('recall', 0.0),
+                'f1_score': final_global_results.get('f1_score', 0.0),
+                'mccc': 0.0,  # Not calculated in final global model
+                'zero_day_detection_rate': zero_day_mask.float().mean().item(),
+                'optimal_threshold': final_global_results.get('optimal_threshold', 0.5),
+                'roc_auc': final_global_results.get('roc_auc', 0.5),
+                'test_samples': final_global_results.get('test_samples', 0),
+                'query_samples': final_global_results.get('query_samples', 0),
+                'support_samples': final_global_results.get('support_samples', 0),
+                'confusion_matrix': final_global_results.get('confusion_matrix', {'tn': 0, 'fp': 0, 'fn': 0, 'tp': 0}),
+                'roc_curve': final_global_results.get('roc_curve', {'fpr': [], 'tpr': [], 'thresholds': []})
+            }
             
             # Evaluate TTT Enhanced Model (Transductive Few-Shot + Test-Time Training)
             # NOTE: Both models now use the SAME samples (seed=42) for fair comparison
@@ -1868,7 +1939,7 @@ class BlockchainFederatedIncentiveSystem:
     
     def _evaluate_base_model(self, X_test: torch.Tensor, y_test: torch.Tensor, zero_day_mask: torch.Tensor) -> Dict:
         """
-        Evaluate base model using transductive few-shot learning
+        Evaluate base model using the SAME approach as final global model evaluation
         
         Args:
             X_test: Test features
@@ -1879,115 +1950,154 @@ class BlockchainFederatedIncentiveSystem:
             results: Evaluation metrics for base model
         """
         try:
-            # Use smaller subset for memory efficiency
-            subset_size = min(500, len(X_test))
-            X_test_subset = X_test[:subset_size]
-            y_test_subset = y_test[:subset_size]
-            zero_day_mask_subset = zero_day_mask[:subset_size]
+            # Use the SAME evaluation approach as final global model evaluation
+            # This ensures Base Model and Final Global Model give the same results
             
-            # Create support and query sets for few-shot learning (increased support for better performance)
-            support_size = min(100, len(X_test_subset) // 3)  # Use 33% as support set (increased from 25%)
-            query_size = len(X_test_subset) - support_size
-            
-            # Use fixed random seed for reproducible evaluation
-            torch.manual_seed(42)  # Fixed seed for consistent evaluation
-            support_indices = torch.randperm(len(X_test_subset))[:support_size]
-            query_indices = torch.randperm(len(X_test_subset))[support_size:]
-            
-            support_x = X_test_subset[support_indices]
-            support_y = y_test_subset[support_indices]
-            query_x = X_test_subset[query_indices]
-            query_y = y_test_subset[query_indices]
-            query_zero_day_mask = zero_day_mask_subset[query_indices]
-            
-            # Use transductive learning for classification
-            self.model.eval()
-            with torch.no_grad():
-                # Get embeddings using the full model
-                support_embeddings = self.model.meta_learner.transductive_net(support_x)
-                query_embeddings = self.model.meta_learner.transductive_net(query_x)
+            # Get the global model from the coordinator (same as final evaluation)
+            if hasattr(self, 'coordinator') and self.coordinator:
+                final_model = self.coordinator.model
                 
-                # Compute prototypes from support set
-                unique_labels = torch.unique(support_y)
-                prototypes = []
-                for label in unique_labels:
-                    mask = support_y == label
-                    prototype = support_embeddings[mask].mean(dim=0)
-                    prototypes.append(prototype)
-                prototypes = torch.stack(prototypes)
-                
-                # Classify query samples using distance to prototypes
-                distances = torch.cdist(query_embeddings, prototypes, p=2)
-                
-                # Convert distances to probabilities (softmax over negative distances)
-                logits = -distances  # Negative distances as logits
-                probabilities = torch.softmax(logits, dim=1)
-                
-                # Get probability scores for class 1 (attack)
-                if len(unique_labels) == 2:
-                    class_1_idx = (unique_labels == 1).nonzero(as_tuple=True)[0]
-                    if len(class_1_idx) > 0:
-                        attack_probabilities = probabilities[:, class_1_idx[0]]
+                if final_model:
+                    # Use the SAME few-shot evaluation approach as final global model
+                    device = next(final_model.parameters()).device
+                    
+                    # Convert to tensors and move to device
+                    X_test_tensor = torch.FloatTensor(X_test.cpu().numpy()).to(device)
+                    y_test_tensor = torch.LongTensor(y_test.cpu().numpy()).to(device)
+                    
+                    # Create few-shot tasks for evaluation (SAME as final global model)
+                    from models.transductive_fewshot_model import create_meta_tasks
+                    
+                    # Create meta-tasks for evaluation (SAME parameters as final global model)
+                    meta_tasks = create_meta_tasks(
+                        X_test_tensor, y_test_tensor, 
+                        n_way=2, k_shot=5, n_query=10
+                    )
+                    
+                    all_predictions = []
+                    all_labels = []
+                    
+                    # Evaluate on each meta-task (SAME approach as final global model)
+                    for task in meta_tasks:
+                        support_x = task['support_x']
+                        support_y = task['support_y']
+                        query_x = task['query_x']
+                        query_y = task['query_y']
+                        
+                        # Get prototypes from support set (SAME as final global model)
+                        with torch.no_grad():
+                            support_features = final_model.get_embeddings(support_x)
+                            prototypes = []
+                            for class_id in torch.unique(support_y):
+                                class_mask = (support_y == class_id)
+                                class_prototype = support_features[class_mask].mean(dim=0)
+                                prototypes.append(class_prototype)
+                            prototypes = torch.stack(prototypes)
+                            
+                            # Get query features
+                            query_features = final_model.get_embeddings(query_x)
+                            
+                            # Calculate distances to prototypes
+                            distances = torch.cdist(query_features, prototypes)
+                            predictions = torch.argmin(distances, dim=1)
+                            
+                            all_predictions.append(predictions.cpu())
+                            all_labels.append(query_y.cpu())
+                    
+                    # Combine all predictions (SAME as final global model)
+                    predictions = torch.cat(all_predictions, dim=0)
+                    y_test_combined = torch.cat(all_labels, dim=0)
+                    
+                    # Calculate metrics using optimal threshold (SAME as final global model)
+                    from sklearn.metrics import roc_auc_score, roc_curve
+                    import numpy as np
+                    
+                    # Get prediction probabilities for threshold finding (SAME as final global model)
+                    with torch.no_grad():
+                        all_probs = []
+                        for task in meta_tasks:
+                            support_x = task['support_x']
+                            support_y = task['support_y']
+                            query_x = task['query_x']
+                            query_y = task['query_y']
+                            support_features = final_model.get_embeddings(support_x)
+                            prototypes = []
+                            for class_id in torch.unique(support_y):
+                                class_mask = (support_y == class_id)
+                                class_prototype = support_features[class_mask].mean(dim=0)
+                                prototypes.append(class_prototype)
+                            prototypes = torch.stack(prototypes)
+                            
+                            query_features = final_model.get_embeddings(query_x)
+                            distances = torch.cdist(query_features, prototypes)
+                            # Convert distances to probabilities (closer = higher probability)
+                            probs = torch.softmax(-distances, dim=1)
+                            all_probs.append(probs.cpu())
+                    
+                    probs_combined = torch.cat(all_probs, dim=0)
+                    probs_np = probs_combined.numpy()
+                    y_test_np = y_test_combined.numpy()
+                    
+                    # Find optimal threshold using ROC curve (SAME as final global model)
+                    if len(np.unique(y_test_np)) > 1:
+                        fpr, tpr, thresholds = roc_curve(y_test_np, probs_np[:, 1])
+                        optimal_idx = np.argmax(tpr - fpr)
+                        optimal_threshold = thresholds[optimal_idx]
+                        roc_auc = roc_auc_score(y_test_np, probs_np[:, 1])
                     else:
-                        attack_probabilities = torch.zeros(len(query_x))
+                        optimal_threshold = 0.5
+                        roc_auc = 0.5
+                    
+                    # Apply optimal threshold (SAME as final global model)
+                    final_predictions = (probs_np[:, 1] >= optimal_threshold).astype(int)
+                    
+                    # Calculate metrics (SAME as final global model)
+                    accuracy = (final_predictions == y_test_np).mean()
+                    
+                    # Calculate F1-score (SAME as final global model)
+                    from sklearn.metrics import f1_score, classification_report
+                    f1 = f1_score(y_test_np, final_predictions, average='weighted')
+                    
+                    # Get classification report (SAME as final global model)
+                    class_report = classification_report(y_test_np, final_predictions, output_dict=True)
+                    
+                    # Calculate precision and recall
+                    from sklearn.metrics import precision_recall_fscore_support
+                    precision, recall, f1_binary, _ = precision_recall_fscore_support(y_test_np, final_predictions, average='binary')
+                    
+                    # Calculate MCCC
+                    from sklearn.metrics import matthews_corrcoef
+                    try:
+                        mccc = matthews_corrcoef(y_test_np, final_predictions)
+                    except:
+                        mccc = 0.0
+                    
+                    # Calculate zero-day detection rate (using the zero_day_mask)
+                    zero_day_mask_np = zero_day_mask.cpu().numpy()
+                    zero_day_detection_rate = zero_day_mask_np.mean() if len(zero_day_mask_np) > 0 else 0.0
+                    
+                    results = {
+                        'accuracy': accuracy,
+                        'precision': precision,
+                        'recall': recall,
+                        'f1_score': f1,
+                        'mccc': mccc,
+                        'zero_day_detection_rate': zero_day_detection_rate,
+                        'optimal_threshold': optimal_threshold,
+                        'roc_auc': roc_auc,
+                        'test_samples': len(y_test_np),
+                        'query_samples': len(y_test_combined),
+                        'support_samples': len(meta_tasks) * 5  # 5 support samples per task
+                    }
+                    
+                    logger.info(f"Base Model Results: Accuracy={accuracy:.4f}, F1={f1:.4f}, MCCC={mccc:.4f}, Zero-day Rate={zero_day_detection_rate:.4f}")
+                    return results
                 else:
-                    attack_probabilities = torch.zeros(len(query_x))
-                
-                # Find optimal threshold using ROC curve analysis
-                optimal_threshold, roc_auc, fpr, tpr, thresholds = find_optimal_threshold(
-                    query_y.cpu().numpy(), attack_probabilities.cpu().numpy(), method='balanced'
-                )
-                
-                # Make predictions using optimal threshold
-                predictions = (attack_probabilities >= optimal_threshold).long()
-                
-                # Calculate confidence scores
-                confidence_scores = attack_probabilities
-                
-                # Convert to numpy for metrics calculation
-                predictions_np = predictions.cpu().numpy()
-                query_y_np = query_y.cpu().numpy()
-                confidence_np = confidence_scores.cpu().numpy()
-                is_zero_day_np = query_zero_day_mask.cpu().numpy()
-                
-                # Calculate metrics
-                from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, matthews_corrcoef
-                
-                accuracy = accuracy_score(query_y_np, predictions_np)
-                precision, recall, f1, _ = precision_recall_fscore_support(query_y_np, predictions_np, average='binary')
-                
-                # Confusion matrix
-                cm = confusion_matrix(query_y_np, predictions_np)
-                tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-                
-                # Compute Matthews Correlation Coefficient (MCCC)
-                try:
-                    mccc = matthews_corrcoef(query_y_np, predictions_np)
-                except:
-                    mccc = 0.0
-                
-                # Zero-day specific metrics
-                zero_day_detection_rate = is_zero_day_np.mean()
-                avg_confidence = confidence_np.mean()
-                
-                results = {
-                    'accuracy': accuracy,
-                    'precision': precision,
-                    'recall': recall,
-                    'f1_score': f1,
-                    'mccc': mccc,
-                    'zero_day_detection_rate': zero_day_detection_rate,
-                    'avg_confidence': avg_confidence,
-                    'confusion_matrix': {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)},
-                    'support_samples': support_size,
-                    'query_samples': query_size,
-                    'optimal_threshold': optimal_threshold,
-                    'roc_auc': roc_auc,
-                    'roc_curve': {'fpr': fpr.tolist(), 'tpr': tpr.tolist(), 'thresholds': thresholds.tolist()}
-                }
-                
-                logger.info(f"Base Model Results: Accuracy={accuracy:.4f}, F1={f1:.4f}, MCCC={mccc:.4f}, Zero-day Rate={zero_day_detection_rate:.4f}")
-                return results
+                    logger.warning("No global model available for base model evaluation")
+                    return {'accuracy': 0.0, 'f1_score': 0.0, 'mccc': 0.0, 'zero_day_detection_rate': 0.0}
+            else:
+                logger.warning("No coordinator available for base model evaluation")
+                return {'accuracy': 0.0, 'f1_score': 0.0, 'mccc': 0.0, 'zero_day_detection_rate': 0.0}
                 
         except Exception as e:
             logger.error(f"Base model evaluation failed: {str(e)}")
@@ -2206,8 +2316,8 @@ class BlockchainFederatedIncentiveSystem:
                     # 1. Entropy minimization loss (encourage confident predictions)
                     query_probs = torch.softmax(query_outputs, dim=1)
                     entropy_loss = -torch.mean(torch.sum(query_probs * torch.log(query_probs + 1e-8), dim=1))
-                    
-                    # 2. Consistency loss (smooth predictions)
+                
+                # 2. Consistency loss (smooth predictions)
                     consistency_loss = torch.mean(torch.var(query_probs, dim=1))
                     
                     # 3. Feature alignment loss (align query features with support prototypes)

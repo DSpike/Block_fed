@@ -170,6 +170,9 @@ class FedAVGAggregator:
             ipfs_cid = self.ipfs_client.add_data(model_data)
             
             logger.info(f"Model stored on IPFS: {ipfs_cid}")
+            
+            # Note: IPFS storage doesn't consume blockchain gas, so we don't track it
+            
             return ipfs_cid
             
         except Exception as e:
@@ -201,6 +204,27 @@ class FedAVGAggregator:
             )
             
             logger.info(f"Model recorded on blockchain: {tx_hash}")
+            
+            # Record gas usage for model update (aggregation result)
+            if hasattr(self, 'gas_collector') and self.gas_collector:
+                try:
+                    # Get transaction receipt to extract gas data
+                    receipt = self.blockchain_client.web3.eth.get_transaction_receipt(tx_hash)
+                    self.gas_collector.record_transaction(
+                        tx_hash=tx_hash,
+                        tx_type="Model Update",
+                        gas_used=receipt.gasUsed,
+                        gas_limit=receipt.gasUsed,
+                        gas_price=0,
+                        block_number=receipt.blockNumber,
+                        round_number=round_number,
+                        client_id=None,  # Global model update
+                        ipfs_cid=ipfs_cid
+                    )
+                    logger.info(f"Recorded real gas transaction: Model Update - Gas: {receipt.gasUsed}, Block: {receipt.blockNumber}")
+                except Exception as gas_error:
+                    logger.warning(f"Failed to record gas for model update: {gas_error}")
+            
             return tx_hash
             
         except Exception as e:
@@ -227,6 +251,36 @@ class FedAVGAggregator:
             if computed_hash != client_update.model_hash:
                 logger.error(f"Model hash mismatch for client {client_update.client_id}")
                 return False
+            
+            # Record client update on blockchain FIRST
+            if self.blockchain_enabled:
+                try:
+                    # Store model on IPFS
+                    ipfs_cid = self.store_model_on_ipfs(
+                        client_update.model_parameters, 
+                        {'client_id': client_update.client_id, 'round': self.current_round}
+                    )
+                    
+                    if ipfs_cid:
+                        # Record on blockchain
+                        tx_hash = self.record_on_blockchain(
+                            client_update.model_hash, 
+                            ipfs_cid,
+                            self.current_round
+                        )
+                        
+                        if tx_hash:
+                            logger.info(f"Client {client_update.client_id} update recorded on blockchain: {tx_hash}")
+                        else:
+                            logger.error(f"Failed to record client {client_update.client_id} update on blockchain")
+                            return False
+                    else:
+                        logger.error(f"Failed to store client {client_update.client_id} model on IPFS")
+                        return False
+                        
+                except Exception as e:
+                    logger.error(f"Failed to record client {client_update.client_id} update: {str(e)}")
+                    return False
             
             self.client_updates[client_update.client_id] = client_update
             logger.info(f"Added update from client {client_update.client_id}")
@@ -821,6 +875,9 @@ class BlockchainFederatedClient:
             
             ipfs_cid = self.ipfs_client.add_data(model_data)
             logger.info(f"Client {self.client_id}: Model stored on IPFS: {ipfs_cid}")
+            
+            # Note: IPFS storage doesn't consume blockchain gas, so we don't track it
+            
             return ipfs_cid
             
         except Exception as e:
@@ -839,6 +896,27 @@ class BlockchainFederatedClient:
                 ipfs_cid=ipfs_cid
             )
             logger.info(f"Client {self.client_id}: Recorded on blockchain: {tx_hash}")
+            
+            # Record gas usage for client update
+            if hasattr(self, 'gas_collector') and self.gas_collector:
+                try:
+                    # Get transaction receipt to extract gas data
+                    receipt = self.blockchain_client.web3.eth.get_transaction_receipt(tx_hash)
+                    self.gas_collector.record_transaction(
+                        tx_hash=tx_hash,
+                        tx_type="Client Update",
+                        gas_used=receipt.gasUsed,
+                        gas_limit=receipt.gasUsed,  # Use gasUsed as limit for simplicity
+                        gas_price=0,  # Not critical for analysis
+                        block_number=receipt.blockNumber,
+                        round_number=getattr(self, 'current_round', 0),
+                        client_id=self.client_id,
+                        ipfs_cid=ipfs_cid
+                    )
+                    logger.info(f"Recorded real gas transaction: Client Update - Gas: {receipt.gasUsed}, Block: {receipt.blockNumber}")
+                except Exception as gas_error:
+                    logger.warning(f"Failed to record gas for client update: {gas_error}")
+            
             return tx_hash
             
         except Exception as e:

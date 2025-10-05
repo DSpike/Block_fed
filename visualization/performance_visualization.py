@@ -503,12 +503,12 @@ class PerformanceVisualizer:
             
             types = list(type_gas.keys())
             avg_gas = [np.mean(type_gas[t]) for t in types]
-            colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7']
+            colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98FB98', '#F0E68C', '#FFB6C1', '#87CEEB']
             
             bars1 = ax1.bar(types, avg_gas, color=colors[:len(types)], alpha=0.8, edgecolor='black', linewidth=1)
             ax1.set_title('Average Gas Usage by Transaction Type', fontweight='bold', fontsize=12)
             ax1.set_ylabel('Gas Used (units)')
-            ax1.tick_params(axis='x', rotation=45)
+            ax1.tick_params(axis='x', rotation=0)
             ax1.grid(True, alpha=0.3, axis='y')
             
             # Add value labels on bars
@@ -527,14 +527,14 @@ class PerformanceVisualizer:
             
             round_names = list(round_gas.keys())
             total_gas_per_round = [sum(round_gas[r]) for r in round_names]
-            colors2 = ['#FF9999', '#66B2FF', '#99FF99', '#FFCC99', '#FF99CC']
+            colors2 = ['#FF9999', '#66B2FF', '#99FF99', '#FFCC99', '#FF99CC', '#DDA0DD', '#98FB98', '#F0E68C', '#FFB6C1', '#87CEEB']
             
             bars2 = ax2.bar(round_names, total_gas_per_round, color=colors2[:len(round_names)], 
                            alpha=0.8, edgecolor='black', linewidth=1)
             ax2.set_title('Total Gas Usage per Federated Round', fontweight='bold', fontsize=12)
             ax2.set_ylabel('Total Gas Used (units)')
             ax2.set_xlabel('Federated Round')
-            ax2.tick_params(axis='x', rotation=45)
+            ax2.tick_params(axis='x', rotation=0)
             ax2.grid(True, alpha=0.3, axis='y')
             
             # Add value labels on bars
@@ -546,9 +546,20 @@ class PerformanceVisualizer:
         # Plot 3: Gas Usage Trend Over Time
         if gas_used:
             x_pos = range(len(gas_used))
-            colors3 = ['#FF6B6B' if 'Client' in str(tx_type) else 
-                      '#4ECDC4' if 'Aggregation' in str(tx_type) else 
-                      '#45B7D1' for tx_type in transaction_types] if transaction_types else ['#FF6B6B'] * len(gas_used)
+            colors3 = []
+            for tx_type in transaction_types if transaction_types else ['Unknown'] * len(gas_used):
+                if 'Client Update' in str(tx_type):
+                    colors3.append('#FF6B6B')  # Red for client updates
+                elif 'Model Update' in str(tx_type):
+                    colors3.append('#4ECDC4')  # Teal for model updates
+                elif 'Incentive Distribution' in str(tx_type):
+                    colors3.append('#45B7D1')  # Blue for incentives
+                elif 'IPFS Storage' in str(tx_type):
+                    colors3.append('#96CEB4')  # Green for IPFS
+                elif 'Client IPFS Storage' in str(tx_type):
+                    colors3.append('#FFEAA7')  # Yellow for client IPFS
+                else:
+                    colors3.append('#DDA0DD')  # Purple for others
             
             bars3 = ax3.bar(x_pos, gas_used, color=colors3, alpha=0.7, edgecolor='black', linewidth=0.5)
             ax3.set_title('Gas Usage Trend Over All Transactions', fontweight='bold', fontsize=12)
@@ -857,7 +868,7 @@ class PerformanceVisualizer:
         cm = np.array([[tn, fp], [fn, tp]])
         
         # Plot confusion matrix
-        im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+        im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Greens)
         ax.figure.colorbar(im, ax=ax)
         
         # Set labels
