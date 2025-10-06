@@ -1318,15 +1318,40 @@ class BlockchainFederatedIncentiveSystem:
                             all_probs.append(probs.cpu())
                     
                     probs_combined = torch.cat(all_probs, dim=0)
-                    probs_np = probs_combined.numpy()
-                    y_test_np = y_test_combined.numpy()
+                    probs_np = probs_combined.detach().numpy()
+                    y_test_np = y_test_combined.detach().numpy()
                     
-                    # Find optimal threshold using ROC curve
-                    if len(np.unique(y_test_np)) > 1:
-                        fpr, tpr, thresholds = roc_curve(y_test_np, probs_np[:, 1])
+                    # FIXED: Find optimal threshold using SUPPORT SET ONLY (no data leakage)
+                    # Collect support set predictions for threshold optimization
+                    all_support_probs = []
+                    all_support_labels = []
+                    
+                    for task in meta_tasks:
+                        support_x = task['support_x']
+                        support_y = task['support_y']
+                        support_features = final_model.get_embeddings(support_x)
+                        prototypes = []
+                        for class_id in torch.unique(support_y):
+                            class_mask = (support_y == class_id)
+                            class_prototype = support_features[class_mask].mean(dim=0)
+                            prototypes.append(class_prototype)
+                        prototypes = torch.stack(prototypes)
+                        
+                        support_distances = torch.cdist(support_features, prototypes)
+                        support_probs = torch.softmax(-support_distances, dim=1)
+                        all_support_probs.append(support_probs.cpu())
+                        all_support_labels.append(support_y.cpu())
+                    
+                    support_probs_combined = torch.cat(all_support_probs, dim=0)
+                    support_labels_combined = torch.cat(all_support_labels, dim=0)
+                    support_probs_np = support_probs_combined.detach().numpy()
+                    support_labels_np = support_labels_combined.detach().numpy()
+                    
+                    if len(np.unique(support_labels_np)) > 1:
+                        fpr, tpr, thresholds = roc_curve(support_labels_np, support_probs_np[:, 1])
                         optimal_idx = np.argmax(tpr - fpr)
                         optimal_threshold = thresholds[optimal_idx]
-                        roc_auc = roc_auc_score(y_test_np, probs_np[:, 1])
+                        roc_auc = roc_auc_score(support_labels_np, support_probs_np[:, 1])
                     else:
                         optimal_threshold = 0.5
                         roc_auc = 0.5
@@ -2100,15 +2125,40 @@ class BlockchainFederatedIncentiveSystem:
                             all_probs.append(probs.cpu())
                     
                     probs_combined = torch.cat(all_probs, dim=0)
-                    probs_np = probs_combined.numpy()
-                    y_test_np = y_test_combined.numpy()
+                    probs_np = probs_combined.detach().numpy()
+                    y_test_np = y_test_combined.detach().numpy()
                     
-                    # Find optimal threshold using ROC curve (SAME as final global model)
-                    if len(np.unique(y_test_np)) > 1:
-                        fpr, tpr, thresholds = roc_curve(y_test_np, probs_np[:, 1])
+                    # FIXED: Find optimal threshold using SUPPORT SET ONLY (no data leakage)
+                    # Collect support set predictions for threshold optimization
+                    all_support_probs = []
+                    all_support_labels = []
+                    
+                    for task in meta_tasks:
+                        support_x = task['support_x']
+                        support_y = task['support_y']
+                        support_features = final_model.get_embeddings(support_x)
+                        prototypes = []
+                        for class_id in torch.unique(support_y):
+                            class_mask = (support_y == class_id)
+                            class_prototype = support_features[class_mask].mean(dim=0)
+                            prototypes.append(class_prototype)
+                        prototypes = torch.stack(prototypes)
+                        
+                        support_distances = torch.cdist(support_features, prototypes)
+                        support_probs = torch.softmax(-support_distances, dim=1)
+                        all_support_probs.append(support_probs.cpu())
+                        all_support_labels.append(support_y.cpu())
+                    
+                    support_probs_combined = torch.cat(all_support_probs, dim=0)
+                    support_labels_combined = torch.cat(all_support_labels, dim=0)
+                    support_probs_np = support_probs_combined.detach().numpy()
+                    support_labels_np = support_labels_combined.detach().numpy()
+                    
+                    if len(np.unique(support_labels_np)) > 1:
+                        fpr, tpr, thresholds = roc_curve(support_labels_np, support_probs_np[:, 1])
                         optimal_idx = np.argmax(tpr - fpr)
                         optimal_threshold = thresholds[optimal_idx]
-                        roc_auc = roc_auc_score(y_test_np, probs_np[:, 1])
+                        roc_auc = roc_auc_score(support_labels_np, support_probs_np[:, 1])
                     else:
                         optimal_threshold = 0.5
                         roc_auc = 0.5
@@ -2204,7 +2254,7 @@ class BlockchainFederatedIncentiveSystem:
             
             # Perform test-time training (TTT) adaptation
             logger.info("🔄 Performing test-time training adaptation...")
-            adapted_model = self._perform_test_time_training(support_x, support_y, query_x)
+            adapted_model = self._perform_test_time_training(support_x, support_y)
             
             # Store TTT adaptation data for visualization
             if hasattr(adapted_model, 'ttt_adaptation_data'):
@@ -2243,9 +2293,24 @@ class BlockchainFederatedIncentiveSystem:
                 else:
                     attack_probabilities = torch.zeros(len(query_x))
                 
-                # Find optimal threshold using ROC curve analysis
+                # FIXED: Find optimal threshold using SUPPORT SET ONLY (no data leakage)
+                # Get support set predictions for threshold optimization
+                support_features = adapted_model.meta_learner.transductive_net(support_x)
+                support_distances = torch.cdist(support_features, prototypes)
+                support_probs = torch.softmax(-support_distances, dim=1)
+                
+                # Get attack probabilities for support set
+                if len(unique_labels) == 2:
+                    class_1_idx = (unique_labels == 1).nonzero(as_tuple=True)[0]
+                    if len(class_1_idx) > 0:
+                        support_attack_probs = support_probs[:, class_1_idx[0]]
+                    else:
+                        support_attack_probs = torch.zeros(len(support_x))
+                else:
+                    support_attack_probs = torch.zeros(len(support_x))
+                
                 optimal_threshold, roc_auc, fpr, tpr, thresholds = find_optimal_threshold(
-                    query_y.cpu().numpy(), attack_probabilities.cpu().numpy(), method='balanced'
+                    support_y.cpu().numpy(), support_attack_probs.cpu().numpy(), method='balanced'
                 )
                 
                 # Make predictions using optimal threshold
@@ -2304,7 +2369,7 @@ class BlockchainFederatedIncentiveSystem:
             logger.error(f"TTT model evaluation failed: {str(e)}")
             return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'zero_day_detection_rate': 0.0}
     
-    def _perform_test_time_training(self, support_x: torch.Tensor, support_y: torch.Tensor, query_x: torch.Tensor) -> nn.Module:
+    def _perform_test_time_training(self, support_x: torch.Tensor, support_y: torch.Tensor, query_x: torch.Tensor = None) -> nn.Module:
         """
         Enhanced test-time training adaptation with adaptive learning rate scheduling
         
@@ -2330,11 +2395,11 @@ class BlockchainFederatedIncentiveSystem:
                 ttt_optimizer, T_0=7, T_mult=2, eta_min=1e-6, last_epoch=-1
             )
             
-            # Adaptive TTT steps based on data complexity
+            # FIXED: Use support set for complexity calculation (no query data)
             base_ttt_steps = 21
-            # Increase steps for more complex data (higher variance in query set)
-            query_variance = torch.var(query_x).item()
-            complexity_factor = min(2.0, 1.0 + query_variance * 10)  # Scale factor based on variance
+            # Calculate complexity based on support set variance
+            support_variance = torch.var(support_x).item()
+            complexity_factor = min(2.0, 1.0 + support_variance * 10)  # Scale factor based on variance
             ttt_steps = int(base_ttt_steps * complexity_factor)
             logger.info(f"Adaptive TTT steps: {ttt_steps} (complexity factor: {complexity_factor:.2f})")
             ttt_losses = []
@@ -2354,13 +2419,11 @@ class BlockchainFederatedIncentiveSystem:
                 
                 # Data augmentation for better TTT adaptation
                 if step % 3 == 0 and step > 0:  # Apply augmentation every 3 steps
-                    # Add small noise to support set for robustness
+                    # FIXED: Add small noise to support set for robustness (no query data)
                     noise_std = 0.01 * (1 - step / ttt_steps)  # Decreasing noise
                     support_x_aug = support_x + torch.randn_like(support_x) * noise_std
-                    query_x_aug = query_x + torch.randn_like(query_x) * noise_std
                 else:
                     support_x_aug = support_x
-                    query_x_aug = query_x
                 
                 # Forward pass on support set
                 support_outputs = adapted_model(support_x_aug)
@@ -2369,49 +2432,9 @@ class BlockchainFederatedIncentiveSystem:
                 focal_loss = FocalLoss(alpha=0.25, gamma=2, reduction='mean')  # Updated alpha
                 support_loss = focal_loss(support_outputs, support_y)
                 
-                # Forward pass on query set (unlabeled)
-                query_outputs = adapted_model(query_x_aug)
-                
-                # Enhanced multi-component loss for better TTT adaptation
-                try:
-                    query_embeddings = adapted_model.meta_learner.transductive_net(query_x_aug)
-                    # Normalize embeddings to prevent extremely large values
-                    query_embeddings = torch.nn.functional.normalize(query_embeddings, p=2, dim=1)
-                    
-                    # 1. Entropy minimization loss (encourage confident predictions)
-                    query_probs = torch.softmax(query_outputs, dim=1)
-                    entropy_loss = -torch.mean(torch.sum(query_probs * torch.log(query_probs + 1e-8), dim=1))
-                
-                # 2. Consistency loss (smooth predictions)
-                    consistency_loss = torch.mean(torch.var(query_probs, dim=1))
-                    
-                    # 3. Feature alignment loss (align query features with support prototypes)
-                    support_embeddings = adapted_model.meta_learner.transductive_net(support_x)
-                    support_embeddings = torch.nn.functional.normalize(support_embeddings, p=2, dim=1)
-                    
-                    # Compute prototypes from support set
-                    unique_labels = torch.unique(support_y)
-                    prototypes = []
-                    for label in unique_labels:
-                        mask = support_y == label
-                        prototype = support_embeddings[mask].mean(dim=0)
-                        prototypes.append(prototype)
-                    prototypes = torch.stack(prototypes)
-                    
-                    # Feature alignment: query features should be close to prototypes
-                    query_distances = torch.cdist(query_embeddings, prototypes, p=2)
-                    feature_alignment_loss = torch.mean(torch.min(query_distances, dim=1)[0])
-                    
-                    # Combined consistency loss
-                    consistency_loss = 0.4 * entropy_loss + 0.3 * consistency_loss + 0.3 * feature_alignment_loss
-                    
-                except Exception as e:
-                    logger.warning(f"Enhanced consistency loss computation failed: {e}")
-                    consistency_loss = torch.tensor(0.0, device=support_x.device)
-                
-                # Enhanced total loss with adaptive weighting
-                consistency_weight = max(0.01, 0.1 * (1 - step / ttt_steps))  # Decreasing weight
-                total_loss = support_loss + consistency_weight * consistency_loss
+                # FIXED: Use only support set for TTT adaptation (no query data leakage)
+                # Only use support loss for genuine test-time training
+                total_loss = support_loss
                 
                 # Backward pass with gradient clipping
                 total_loss.backward()
@@ -2421,10 +2444,10 @@ class BlockchainFederatedIncentiveSystem:
                 # Update learning rate scheduler
                 scheduler.step(total_loss)
                 
-                # Collect metrics for plotting
+                # FIXED: Collect metrics for plotting (no consistency loss without query data)
                 ttt_losses.append(total_loss.item())
                 ttt_support_losses.append(support_loss.item())
-                ttt_consistency_losses.append(consistency_loss.item())
+                ttt_consistency_losses.append(0.0)  # No consistency loss without query data
                 ttt_learning_rates.append(ttt_optimizer.param_groups[0]['lr'])
                 
                 # Enhanced early stopping with accuracy monitoring
@@ -2455,7 +2478,7 @@ class BlockchainFederatedIncentiveSystem:
                 if step % 4 == 0:
                     logger.info(f"Enhanced TTT Step {step}: Loss = {total_loss.item():.4f}, "
                               f"LR = {ttt_optimizer.param_groups[0]['lr']:.6f}, "
-                              f"Consistency Weight = {consistency_weight:.4f}")
+                              f"Consistency Weight = 0.0 (no query data)")
                 
                 # Clear cache every few steps to manage memory
                 if step % 3 == 0:
