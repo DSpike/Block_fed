@@ -445,6 +445,8 @@ class UNSWPreprocessor:
         train_df = self.step2_feature_engineering(train_df)
         train_df = self.step3_data_cleaning(train_df)
         train_df = self.step4_categorical_encoding(train_df)
+        # Apply feature selection using Pearson correlation
+        logger.info("Applying Pearson correlation feature selection...")
         train_df = self.step5_feature_selection(train_df)
         
         # Process test data
@@ -453,11 +455,34 @@ class UNSWPreprocessor:
         test_df = self.step2_feature_engineering(test_df)
         test_df = self.step3_data_cleaning(test_df)
         test_df = self.step4_categorical_encoding(test_df)
+        # Apply feature selection using Pearson correlation
+        logger.info("Applying Pearson correlation feature selection for test data...")
+        test_df = self.step5_feature_selection(test_df)
         
-        # Apply same feature selection to test data
-        if self.selected_features is not None:
-            selected_cols = self.selected_features + ['label', 'attack_cat']
-            test_df = test_df[selected_cols]
+        # Align features between train and test data
+        logger.info("Aligning features between train and test data...")
+        train_cols = set(train_df.columns)
+        test_cols = set(test_df.columns)
+        
+        # Find missing columns in each dataset
+        missing_in_test = train_cols - test_cols
+        missing_in_train = test_cols - train_cols
+        
+        # Add missing columns with zeros
+        for col in missing_in_test:
+            test_df[col] = 0
+            logger.info(f"  Added missing column to test data: {col}")
+        
+        for col in missing_in_train:
+            train_df[col] = 0
+            logger.info(f"  Added missing column to train data: {col}")
+        
+        # Ensure same column order
+        common_cols = sorted(list(train_cols.union(test_cols)))
+        train_df = train_df[common_cols]
+        test_df = test_df[common_cols]
+        
+        logger.info(f"  Final feature count - Train: {len(train_df.columns)}, Test: {len(test_df.columns)}")
         
         # Create zero-day split
         split_data = self.create_zero_day_split(train_df, test_df, zero_day_attack)

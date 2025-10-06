@@ -31,3 +31,4 @@
             'epoch_losses': aggregated_losses,
             'epoch_accuracies': aggregated_accuracies
         }
+

@@ -25,3 +25,4 @@ def fix_multiple_colons():
 
 if __name__ == "__main__":
     fix_multiple_colons()
+

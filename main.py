@@ -30,6 +30,11 @@ from blockchain.blockchain_incentive_contract import BlockchainIncentiveContract
 from visualization.performance_visualization import PerformanceVisualizer
 from incentives.shapley_value_calculator import ShapleyValueCalculator
 
+# Import secure decentralized system components
+from decentralized_fl_system import DecentralizedFederatedLearningSystem, SecureModelUpdate
+from secure_federated_client import SecureFederatedClient
+from real_ipfs_client import RealIPFSClient
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -109,7 +114,7 @@ class EnhancedSystemConfig:
     zero_day_attack: str = "DoS"
     
     # Model configuration (restored to best performing)
-    input_dim: int = 30
+    input_dim: int = 32  # Updated to use selected features (Pearson correlation + 2 additional columns)
     hidden_dim: int = 128
     embedding_dim: int = 64
     
@@ -140,6 +145,60 @@ class EnhancedSystemConfig:
     
     # Decentralization configuration
     fully_decentralized: bool = False  # Set to True for 100% decentralized system
+
+class SecureBlockchainFederatedIncentiveSystem:
+    """
+    Secure blockchain-enabled federated learning system with IPFS and all core features:
+    - Decentralized consensus with 2 miners
+    - IPFS-only model transmission (no raw parameters)
+    - Shapley value-based incentives
+    - MetaMask authentication
+    - Real blockchain transactions
+    - Token distribution
+    - Gas tracking
+    """
+    
+    def __init__(self, config: EnhancedSystemConfig):
+        """Initialize the secure system with all core features"""
+        self.config = config
+        self.device = torch.device(config.device)
+        
+        # GPU Memory Management
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+            torch.cuda.set_per_process_memory_fraction(0.2)
+            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        
+        logger.info(f"🔐 Initializing Secure Blockchain Federated Learning System")
+        logger.info(f"Device: {self.device}")
+        logger.info(f"Number of clients: {config.num_clients}")
+        logger.info(f"Number of rounds: {config.num_rounds}")
+        logger.info(f"Incentives enabled: {config.enable_incentives}")
+        
+        # Initialize core components
+        self.preprocessor = None
+        self.model = None
+        self.decentralized_system = None
+        self.secure_clients = {}
+        self.ipfs_client = None
+        
+        # Initialize incentive system components
+        self.incentive_manager = None
+        self.incentive_contract = None
+        self.shapley_calculator = None
+        self.performance_visualizer = None
+        
+        # Initialize blockchain components
+        self.blockchain_ipfs = None
+        self.metamask_auth = None
+        self.identity_manager = None
+        self.provenance_system = None
+        
+        # Training history
+        self.training_history = []
+        self.incentive_history = []
+        
+        logger.info("✅ Secure system initialized with all core features")
 
 class BlockchainFederatedIncentiveSystem:
     """
@@ -219,10 +278,11 @@ class BlockchainFederatedIncentiveSystem:
             # 2. Initialize transductive few-shot model
             logger.info("Initializing transductive few-shot model...")
             self.model = TransductiveFewShotModel(
-                input_dim=30,  # Fixed to match actual feature count from preprocessing
+                input_dim=self.config.input_dim,  # Use config value (57 features)
                 hidden_dim=self.config.hidden_dim,
                 embedding_dim=self.config.embedding_dim,
-                num_classes=2  # Binary classification for zero-day detection
+                num_classes=2,  # Binary classification for zero-day detection
+                sequence_length=12  # Increased sequence length for TCN
             ).to(self.device)
             
             # 3. Initialize blockchain and IPFS integration
@@ -1278,8 +1338,11 @@ class BlockchainFederatedIncentiveSystem:
                     accuracy = (final_predictions == y_test_np).mean()
                     
                     # Calculate F1-score
-                    from sklearn.metrics import f1_score, classification_report
+                    from sklearn.metrics import f1_score, classification_report, matthews_corrcoef
                     f1 = f1_score(y_test_np, final_predictions, average='weighted')
+                    
+                    # Calculate Matthews Correlation Coefficient (MCC)
+                    mcc = matthews_corrcoef(y_test_np, final_predictions)
                     
                     # Get classification report
                     class_report = classification_report(y_test_np, final_predictions, output_dict=True)
@@ -1295,6 +1358,7 @@ class BlockchainFederatedIncentiveSystem:
                     final_results = {
                         'accuracy': accuracy,
                         'f1_score': f1,
+                        'mcc': mcc,
                         'classification_report': class_report,
                         'test_samples': len(X_test),
                         'model_type': 'Final Global Model (Few-Shot)',
@@ -1309,6 +1373,7 @@ class BlockchainFederatedIncentiveSystem:
                     logger.info("✅ Final global model evaluation completed!")
                     logger.info(f"Final Model Accuracy: {accuracy:.4f}")
                     logger.info(f"Final Model F1-Score: {f1:.4f}")
+                    logger.info(f"Final Model MCC: {mcc:.4f}")
                     logger.info(f"Test Samples: {len(X_test)}")
                     logger.info(f"Query Samples: {len(y_test_combined)}")
                     logger.info(f"Support Samples: {len(meta_tasks) * 5}")
@@ -1889,7 +1954,7 @@ class BlockchainFederatedIncentiveSystem:
                 'precision': final_global_results.get('classification_report', {}).get('1', {}).get('precision', 0.0),
                 'recall': final_global_results.get('classification_report', {}).get('1', {}).get('recall', 0.0),
                 'f1_score': final_global_results.get('f1_score', 0.0),
-                'mccc': 0.0,  # Not calculated in final global model
+                'mccc': final_global_results.get('mcc', 0.0),  # MCC from final global model evaluation
                 'zero_day_detection_rate': zero_day_mask.float().mean().item(),
                 'optimal_threshold': final_global_results.get('optimal_threshold', 0.5),
                 'roc_auc': final_global_results.get('roc_auc', 0.5),
