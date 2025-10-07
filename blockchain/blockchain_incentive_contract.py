@@ -812,7 +812,8 @@ class BlockchainIncentiveManager:
                         # Use Shapley value for fair distribution
                         shapley_value = shapley_values[client_address]
                         base_reward = 10  # Small base reward for participation
-                        shapley_reward = int(shapley_value * 1000)  # Scale Shapley value appropriately
+                        # Ensure Shapley reward is never negative
+                        shapley_reward = max(0, int(shapley_value * 1000))  # Scale Shapley value appropriately, but never negative
                         token_reward = base_reward + shapley_reward
                         contribution_score = int(shapley_value * 100)  # For logging
                         logger.info(f"Using Shapley value {shapley_value:.4f} for client {client_address}")
@@ -823,6 +824,9 @@ class BlockchainIncentiveManager:
                         improvement_reward = max(0, contribution_score * 2)  # 2 tokens per percentage point
                         token_reward = base_reward + improvement_reward
                         logger.info(f"Using fallback formula for client {client_address}")
+                    
+                    # Ensure token_reward is never negative
+                    token_reward = max(0, token_reward)
                     
                     logger.info(f"DEBUG: contribution_score={contribution_score}, token_reward={token_reward}")
                     
