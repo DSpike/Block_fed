@@ -120,7 +120,7 @@ class EnhancedSystemConfig:
     
     # Federated learning configuration (optimized for better performance)
     num_clients: int = 3
-    num_rounds: int = 8  # Increased rounds for better convergence
+    num_rounds: int = 20  # Increased rounds for better convergence
     local_epochs: int = 50  # Increased for better performance
     learning_rate: float = 0.001
     
@@ -2187,9 +2187,12 @@ class BlockchainFederatedIncentiveSystem:
             y_test_subset = y_test[:subset_size]
             zero_day_mask_subset = zero_day_mask[:subset_size]
             
-            # Create support and query sets for few-shot learning (increased support for better performance)
-            support_size = min(100, len(X_test_subset) // 3)  # Use 33% as support set (increased from 25%)
+            # Create support and query sets for few-shot learning (enhanced support for better generalization)
+            support_size = min(250, len(X_test_subset) // 2)  # Use 50% as support set for enhanced generalization
             query_size = len(X_test_subset) - support_size
+            
+            # Log the selected support set size for debugging and monitoring
+            logger.info(f"TTT: Using support set size {support_size} (50% of {len(X_test_subset)} test samples)")
             
             # Use SAME fixed random seed for reproducible evaluation (same as base model)
             torch.manual_seed(42)  # Same seed as base model for fair comparison
@@ -2201,6 +2204,54 @@ class BlockchainFederatedIncentiveSystem:
             query_x = X_test_subset[query_indices]
             query_y = y_test_subset[query_indices]
             query_zero_day_mask = zero_day_mask_subset[query_indices]
+            
+            # Device alignment and shape verification for TTT
+            device = X_test.device
+            logger.info(f"TTT: Aligning tensors to device {device}")
+            
+            # Ensure all tensors are on the same device
+            support_x = support_x.to(device)
+            support_y = support_y.to(device)
+            query_x = query_x.to(device)
+            query_y = query_y.to(device)
+            query_zero_day_mask = query_zero_day_mask.to(device)
+            
+            # Shape verification and validation
+            logger.info(f"TTT: Support set shape - X: {support_x.shape}, Y: {support_y.shape}")
+            logger.info(f"TTT: Query set shape - X: {query_x.shape}, Y: {query_y.shape}")
+            
+            # Performance validation - check for valid data
+            if support_x.numel() == 0 or query_x.numel() == 0:
+                logger.error("TTT: Empty support or query set detected")
+                return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'zero_day_detection_rate': 0.0}
+            
+            # Check for NaN or infinite values
+            if torch.isnan(support_x).any() or torch.isinf(support_x).any():
+                logger.error("TTT: NaN or infinite values detected in support set")
+                return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'zero_day_detection_rate': 0.0}
+            
+            if torch.isnan(query_x).any() or torch.isinf(query_x).any():
+                logger.error("TTT: NaN or infinite values detected in query set")
+                return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'zero_day_detection_rate': 0.0}
+            
+            # Validate label ranges
+            unique_support_labels = torch.unique(support_y)
+            unique_query_labels = torch.unique(query_y)
+            logger.info(f"TTT: Support labels range: {unique_support_labels.tolist()}")
+            logger.info(f"TTT: Query labels range: {unique_query_labels.tolist()}")
+            
+            # Check for sufficient class diversity in support set
+            if len(unique_support_labels) < 2:
+                logger.warning(f"TTT: Insufficient class diversity in support set (only {len(unique_support_labels)} classes)")
+            
+            # Log data quality metrics
+            support_mean = torch.mean(support_x).item()
+            support_std = torch.std(support_x).item()
+            query_mean = torch.mean(query_x).item()
+            query_std = torch.std(query_x).item()
+            
+            logger.info(f"TTT: Support set statistics - Mean: {support_mean:.4f}, Std: {support_std:.4f}")
+            logger.info(f"TTT: Query set statistics - Mean: {query_mean:.4f}, Std: {query_std:.4f}")
             
             # Perform test-time training (TTT) adaptation
             logger.info("🔄 Performing test-time training adaptation...")
@@ -2708,7 +2759,7 @@ def main():
     # Create enhanced system configuration (using class defaults with increased training)
     config = EnhancedSystemConfig(
         num_clients=3,
-        num_rounds=6,  # Increased rounds for better convergence
+        num_rounds=20,  # Increased rounds for better convergence
         local_epochs=6,  # Reduced for quick testing
         learning_rate=0.001,
         enable_incentives=True,
