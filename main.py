@@ -581,6 +581,235 @@ class BlockchainFederatedIncentiveSystem:
             'epoch_accuracies': aggregated_accuracies
             }
     
+    def _calculate_data_quality_entropy(self, client_id: str) -> float:
+        """
+        Calculate data quality based on entropy of client's label distribution
+        
+        Args:
+            client_id: Client identifier
+            
+        Returns:
+            data_quality: Normalized data quality score [0, 100]
+        """
+        try:
+            if not hasattr(self, 'coordinator') or not self.coordinator:
+                logger.warning("No coordinator available for data quality calculation")
+                return 50.0  # Default neutral score
+            
+            # Find the client
+            client = None
+            for c in self.coordinator.clients:
+                if c.client_id == client_id:
+                    client = c
+                    break
+            
+            if not client or not hasattr(client, 'train_labels') or client.train_labels is None:
+                logger.warning(f"No training data available for client {client_id}")
+                return 50.0  # Default neutral score
+            
+            # Calculate label distribution
+            labels = client.train_labels.cpu().numpy()
+            unique_labels, counts = np.unique(labels, return_counts=True)
+            
+            if len(unique_labels) < 2:
+                logger.warning(f"Client {client_id} has only {len(unique_labels)} class(es)")
+                return 30.0  # Low score for single class
+            
+            # Calculate entropy
+            probabilities = counts / len(labels)
+            entropy = -np.sum(probabilities * np.log2(probabilities + 1e-10))
+            
+            # Normalize entropy to [0, 100] scale
+            # Higher entropy = more balanced distribution = higher quality
+            max_entropy = np.log2(len(unique_labels))  # Maximum possible entropy
+            normalized_entropy = (entropy / max_entropy) * 100
+            
+            # Add bonus for having more classes (diversity)
+            diversity_bonus = min(10.0, len(unique_labels) * 2.0)
+            data_quality = min(100.0, normalized_entropy + diversity_bonus)
+            
+            logger.info(f"Client {client_id} data quality: entropy={entropy:.3f}, "
+                      f"normalized={normalized_entropy:.1f}, diversity_bonus={diversity_bonus:.1f}, "
+                      f"final={data_quality:.1f}")
+            
+            return data_quality
+            
+        except Exception as e:
+            logger.error(f"Error calculating data quality for client {client_id}: {str(e)}")
+            return 50.0  # Default neutral score
+    
+    def _calculate_reliability_consistency(self, client_id: str, round_num: int) -> float:
+        """
+        Calculate reliability based on participation consistency
+        
+        Args:
+            client_id: Client identifier
+            round_num: Current round number
+            
+        Returns:
+            reliability: Normalized reliability score [0, 100]
+        """
+        try:
+            if not hasattr(self, 'training_history') or not self.training_history:
+                logger.warning("No training history available for reliability calculation")
+                return 70.0  # Default moderate score
+            
+            # Count participation in recent rounds
+            recent_rounds = min(10, round_num)  # Look at last 10 rounds or all available
+            participation_count = 0
+            total_rounds = 0
+            
+            for round_data in self.training_history[-recent_rounds:]:
+                total_rounds += 1
+                client_updates = round_data.get('client_updates', [])
+                
+                # Check if this client participated in this round
+                for update in client_updates:
+                    if hasattr(update, 'client_id') and update.client_id == client_id:
+                        participation_count += 1
+                        break
+            
+            if total_rounds == 0:
+                logger.warning(f"No rounds found for reliability calculation")
+                return 70.0  # Default moderate score
+            
+            # Calculate participation rate
+            participation_rate = participation_count / total_rounds
+            
+            # Calculate consistency score based on participation rate
+            # 100% participation = 100 points, 80%+ = 90+ points, etc.
+            if participation_rate >= 0.95:
+                base_score = 100.0
+            elif participation_rate >= 0.90:
+                base_score = 90.0 + (participation_rate - 0.90) * 100
+            elif participation_rate >= 0.80:
+                base_score = 80.0 + (participation_rate - 0.80) * 100
+            elif participation_rate >= 0.70:
+                base_score = 70.0 + (participation_rate - 0.70) * 100
+            else:
+                base_score = participation_rate * 100
+            
+            # Add bonus for recent participation (recency bias)
+            recent_participation_bonus = 0.0
+            if round_num >= 3:  # Only apply bonus after a few rounds
+                recent_rounds_check = min(3, round_num)
+                recent_participation = 0
+                for round_data in self.training_history[-recent_rounds_check:]:
+                    client_updates = round_data.get('client_updates', [])
+                    for update in client_updates:
+                        if hasattr(update, 'client_id') and update.client_id == client_id:
+                            recent_participation += 1
+                            break
+                
+                if recent_participation == recent_rounds_check:
+                    recent_participation_bonus = 5.0  # 5 point bonus for perfect recent participation
+            
+            reliability = min(100.0, base_score + recent_participation_bonus)
+            
+            logger.info(f"Client {client_id} reliability: participation={participation_count}/{total_rounds} "
+                      f"({participation_rate:.1%}), base_score={base_score:.1f}, "
+                      f"recent_bonus={recent_participation_bonus:.1f}, final={reliability:.1f}")
+            
+            return reliability
+            
+        except Exception as e:
+            logger.error(f"Error calculating reliability for client {client_id}: {str(e)}")
+            return 70.0  # Default moderate score
+    
+    def _log_data_driven_metrics(self, round_num: int, data_quality_scores: Dict[str, float], 
+                                participation_data: Dict[str, float]) -> None:
+        """
+        Log data-driven metrics for transparency and analysis
+        
+        Args:
+            round_num: Current round number
+            data_quality_scores: Data quality scores by client
+            participation_data: Participation rates by client
+        """
+        try:
+            logger.info("=" * 80)
+            logger.info(f"📊 DATA-DRIVEN METRICS SUMMARY - ROUND {round_num}")
+            logger.info("=" * 80)
+            
+            # Calculate summary statistics
+            data_quality_values = list(data_quality_scores.values())
+            participation_values = list(participation_data.values())
+            
+            if data_quality_values:
+                avg_data_quality = np.mean(data_quality_values)
+                std_data_quality = np.std(data_quality_values)
+                min_data_quality = np.min(data_quality_values)
+                max_data_quality = np.max(data_quality_values)
+                
+                logger.info(f"📈 DATA QUALITY METRICS (Entropy-based):")
+                logger.info(f"   Average: {avg_data_quality:.2f} ± {std_data_quality:.2f}")
+                logger.info(f"   Range: [{min_data_quality:.2f}, {max_data_quality:.2f}]")
+            
+            if participation_values:
+                avg_participation = np.mean(participation_values)
+                std_participation = np.std(participation_values)
+                min_participation = np.min(participation_values)
+                max_participation = np.max(participation_values)
+                
+                logger.info(f"🔄 PARTICIPATION METRICS (Consistency-based):")
+                logger.info(f"   Average: {avg_participation:.3f} ± {std_participation:.3f}")
+                logger.info(f"   Range: [{min_participation:.3f}, {max_participation:.3f}]")
+            
+            # Log individual client metrics
+            logger.info(f"👥 INDIVIDUAL CLIENT METRICS:")
+            for client_id in data_quality_scores.keys():
+                data_quality = data_quality_scores[client_id]
+                participation = participation_data[client_id]
+                
+                # Determine quality level
+                if data_quality >= 90:
+                    quality_level = "Excellent"
+                elif data_quality >= 80:
+                    quality_level = "Good"
+                elif data_quality >= 70:
+                    quality_level = "Fair"
+                else:
+                    quality_level = "Poor"
+                
+                # Determine participation level
+                if participation >= 0.95:
+                    participation_level = "Excellent"
+                elif participation >= 0.90:
+                    participation_level = "Good"
+                elif participation >= 0.80:
+                    participation_level = "Fair"
+                else:
+                    participation_level = "Poor"
+                
+                logger.info(f"   {client_id}: Data Quality = {data_quality:.1f} ({quality_level}), "
+                          f"Participation = {participation:.3f} ({participation_level})")
+            
+            # Calculate fairness metrics
+            if len(data_quality_values) > 1:
+                data_quality_cv = (std_data_quality / avg_data_quality) * 100  # Coefficient of variation
+                participation_cv = (std_participation / avg_participation) * 100
+                
+                logger.info(f"⚖️  FAIRNESS METRICS:")
+                logger.info(f"   Data Quality CV: {data_quality_cv:.1f}% (lower = more fair)")
+                logger.info(f"   Participation CV: {participation_cv:.1f}% (lower = more fair)")
+                
+                # Overall fairness assessment
+                if data_quality_cv < 10 and participation_cv < 10:
+                    fairness_level = "Very Fair"
+                elif data_quality_cv < 20 and participation_cv < 20:
+                    fairness_level = "Fair"
+                elif data_quality_cv < 30 and participation_cv < 30:
+                    fairness_level = "Moderately Fair"
+                else:
+                    fairness_level = "Needs Improvement"
+                
+                logger.info(f"   Overall Fairness: {fairness_level}")
+            
+            logger.info("=" * 80)
+            
+        except Exception as e:
+            logger.error(f"Error logging data-driven metrics: {str(e)}")
+    
     def _evaluate_validation_performance(self, round_num: int) -> Dict[str, float]:
         """
         Evaluate model performance on validation dataset
@@ -953,14 +1182,14 @@ class BlockchainFederatedIncentiveSystem:
             client_updates = round_results.get('client_updates', [])
             
             for client_update in client_updates:
-                # Calculate client-specific data quality and reliability scores
-                # Make data quality vary based on client ID for diversity
-                client_num = int(client_update.client_id.split('_')[1]) if '_' in client_update.client_id else 1
-                data_quality = 85.0 + (client_num * 2.5)  # Vary between 85-92.5
-                data_quality = min(100.0, data_quality)
+                # Calculate data-driven data quality and reliability scores
+                logger.info(f"📊 Calculating data-driven metrics for client {client_update.client_id}")
                 
-                # Calculate reliability based on training loss and client performance
-                reliability = 95.0   # Base reliability score
+                # Calculate data quality based on entropy of label distribution
+                data_quality = self._calculate_data_quality_entropy(client_update.client_id)
+                
+                # Calculate reliability based on participation consistency
+                reliability = self._calculate_reliability_consistency(client_update.client_id, round_num)
                 
                 # Calculate reliability based on training loss
                 if hasattr(client_update, 'training_loss'):
@@ -968,9 +1197,8 @@ class BlockchainFederatedIncentiveSystem:
                     loss_factor = client_update.training_loss * 100
                     reliability = max(80.0, min(100.0, 100.0 - loss_factor))
                 
-                # Add some client-specific variation to reliability
-                reliability += (client_num - 2) * 1.5  # Vary reliability slightly
-                reliability = max(80.0, min(100.0, reliability))
+                # Reliability is already calculated using data-driven metrics
+                # No additional client-specific variation needed
                 
                 # Get client address from the client
                 client_address = None
@@ -1116,14 +1344,24 @@ class BlockchainFederatedIncentiveSystem:
             global_performance = current_accuracy - previous_accuracy
             
             # Prepare data quality scores (differentiated)
+            # Prepare data-driven data quality scores for Shapley calculation
             data_quality_scores = {}
-            for client_update in client_updates:
-                client_num = int(client_update.client_id.split('_')[1]) if '_' in client_update.client_id else 1
-                data_quality = 85.0 + (client_num * 2.5)  # Vary between 85-92.5
-                data_quality_scores[client_update.client_id] = min(100.0, data_quality)
+            participation_data = {}
             
-            # Prepare participation data
-            participation_data = {client_update.client_id: 1.0 for client_update in client_updates}
+            for client_update in client_updates:
+                # Calculate data quality based on entropy
+                data_quality = self._calculate_data_quality_entropy(client_update.client_id)
+                data_quality_scores[client_update.client_id] = data_quality
+                
+                # Calculate participation consistency
+                participation_rate = self._calculate_reliability_consistency(client_update.client_id, round_num) / 100.0
+                participation_data[client_update.client_id] = participation_rate
+                
+                logger.info(f"📈 Client {client_update.client_id} metrics: "
+                          f"Data Quality={data_quality:.1f}, Participation={participation_rate:.3f}")
+            
+            # Log comprehensive data-driven metrics for transparency
+            self._log_data_driven_metrics(round_num, data_quality_scores, participation_data)
             
             # Initialize Shapley value calculator
             shapley_calculator = ShapleyValueCalculator()
@@ -2952,7 +3190,7 @@ def main():
     config = EnhancedSystemConfig(
         num_clients=3,
         num_rounds=20,  # Increased rounds for better convergence
-        local_epochs=6,  # Reduced for quick testing
+        local_epochs=9,  # Increased for better local training
         learning_rate=0.001,
         enable_incentives=True,
         base_reward=100,
