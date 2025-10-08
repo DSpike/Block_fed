@@ -248,6 +248,7 @@ class BlockchainFederatedIncentiveSystem:
         # System state
         self.is_initialized = False
         self.training_history = []
+        self.validation_history = None  # Will store validation metrics history
         self.evaluation_results = {}
         self.incentive_history = []
         self.client_addresses = {}
@@ -580,9 +581,91 @@ class BlockchainFederatedIncentiveSystem:
             'epoch_accuracies': aggregated_accuracies
             }
     
+    def _evaluate_validation_performance(self, round_num: int) -> Dict[str, float]:
+        """
+        Evaluate model performance on validation dataset
+        
+        Args:
+            round_num: Current round number for logging
+            
+        Returns:
+            validation_metrics: Dictionary containing validation loss, accuracy, and F1-score
+        """
+        try:
+            if not hasattr(self, 'preprocessed_data') or 'X_val' not in self.preprocessed_data:
+                logger.warning(f"⚠️  Validation data not available for round {round_num}")
+                return None
+            
+            # Get validation data
+            X_val = self.preprocessed_data['X_val']
+            y_val = self.preprocessed_data['y_val']
+            
+            if len(X_val) == 0 or len(y_val) == 0:
+                logger.warning(f"⚠️  Empty validation dataset for round {round_num}")
+                return None
+            
+            # Convert to tensors and move to device
+            X_val_tensor = torch.FloatTensor(X_val).to(self.device)
+            y_val_tensor = torch.LongTensor(y_val).to(self.device)
+            
+            # Get the current global model from coordinator
+            if hasattr(self, 'coordinator') and self.coordinator:
+                global_model = self.coordinator.model
+            else:
+                logger.warning(f"⚠️  No coordinator available for validation in round {round_num}")
+                return None
+            
+            if global_model is None:
+                logger.warning(f"⚠️  No global model available for validation in round {round_num}")
+                return None
+            
+            # Set model to evaluation mode
+            global_model.eval()
+            
+            # Evaluate on validation set
+            with torch.no_grad():
+                # Forward pass
+                outputs = global_model(X_val_tensor)
+                
+                # Calculate loss
+                criterion = torch.nn.CrossEntropyLoss()
+                validation_loss = criterion(outputs, y_val_tensor).item()
+                
+                # Calculate predictions
+                predictions = torch.argmax(outputs, dim=1)
+                
+                # Calculate accuracy
+                correct = (predictions == y_val_tensor).sum().item()
+                total = y_val_tensor.size(0)
+                validation_accuracy = correct / total
+                
+                # Calculate F1-score
+                from sklearn.metrics import f1_score
+                predictions_np = predictions.cpu().numpy()
+                y_val_np = y_val_tensor.cpu().numpy()
+                validation_f1 = f1_score(y_val_np, predictions_np, average='weighted')
+                
+                # Log validation metrics
+                logger.info(f"🔍 Validation evaluation completed for round {round_num}")
+                logger.info(f"   Validation samples: {total}")
+                logger.info(f"   Validation loss: {validation_loss:.6f}")
+                logger.info(f"   Validation accuracy: {validation_accuracy:.4f}")
+                logger.info(f"   Validation F1-score: {validation_f1:.4f}")
+                
+                return {
+                    'loss': validation_loss,
+                    'accuracy': validation_accuracy,
+                    'f1_score': validation_f1,
+                    'samples': total
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Validation evaluation failed for round {round_num}: {str(e)}")
+            return None
+    
     def run_federated_training_with_incentives(self) -> bool:
         """
-        Run federated learning training with incentive mechanisms
+        Run federated learning training with incentive mechanisms and validation monitoring
         
         Returns:
             success: Whether training was successful
@@ -592,12 +675,38 @@ class BlockchainFederatedIncentiveSystem:
             return False
         
         try:
-            logger.info("Starting federated learning training with incentives...")
+            logger.info("Starting federated learning training with incentives and validation monitoring...")
             
-            # Track previous round accuracy for improvement calculation
+            # Initialize validation tracking variables
             previous_round_accuracy = 0.0
+            best_validation_accuracy = 0.0
+            best_validation_loss = float('inf')
+            validation_patience_counter = 0
+            validation_patience_limit = 3  # Stop if no improvement for 3 consecutive rounds
+            min_improvement_threshold = 1e-3  # Minimum improvement threshold
             
-            # Training loop with incentive processing
+            # Validation history tracking
+            validation_history = {
+                'rounds': [],
+                'validation_losses': [],
+                'validation_accuracies': [],
+                'validation_f1_scores': [],
+                'training_losses': [],
+                'training_accuracies': []
+            }
+            
+            # Overfitting detection variables
+            overfitting_threshold = 0.05  # 5% gap between training and validation accuracy
+            consecutive_overfitting_rounds = 0
+            max_overfitting_rounds = 2  # Stop if overfitting detected for 2 consecutive rounds
+            
+            logger.info(f"📊 Validation monitoring enabled:")
+            logger.info(f"   - Patience limit: {validation_patience_limit} rounds")
+            logger.info(f"   - Min improvement: {min_improvement_threshold}")
+            logger.info(f"   - Overfitting threshold: {overfitting_threshold*100:.1f}%")
+            logger.info(f"   - Max overfitting rounds: {max_overfitting_rounds}")
+            
+            # Training loop with incentive processing and validation
             for round_num in range(1, self.config.num_rounds + 1):
                 logger.info(f"\n🔄 ROUND {round_num}/{self.config.num_rounds}")
                 logger.info("-" * 50)
@@ -624,6 +733,65 @@ class BlockchainFederatedIncentiveSystem:
                     current_round_accuracy = self._calculate_round_accuracy(round_results)
                     logger.info(f"🔍 DEBUG: Round accuracy calculated: {current_round_accuracy}")
                     
+                    # Perform validation evaluation
+                    validation_metrics = self._evaluate_validation_performance(round_num)
+                    
+                    if validation_metrics:
+                        validation_loss = validation_metrics['loss']
+                        validation_accuracy = validation_metrics['accuracy']
+                        validation_f1 = validation_metrics['f1_score']
+                        
+                        # Update validation history
+                        validation_history['rounds'].append(round_num)
+                        validation_history['validation_losses'].append(validation_loss)
+                        validation_history['validation_accuracies'].append(validation_accuracy)
+                        validation_history['validation_f1_scores'].append(validation_f1)
+                        validation_history['training_losses'].append(round_results.get('avg_loss', 0.0))
+                        validation_history['training_accuracies'].append(current_round_accuracy)
+                        
+                        # Log validation metrics
+                        logger.info(f"📊 VALIDATION METRICS - Round {round_num}:")
+                        logger.info(f"   Loss: {validation_loss:.6f} (Best: {best_validation_loss:.6f})")
+                        logger.info(f"   Accuracy: {validation_accuracy:.4f} (Best: {best_validation_accuracy:.4f})")
+                        logger.info(f"   F1-Score: {validation_f1:.4f}")
+                        
+                        # Check for improvement
+                        improvement = validation_accuracy - best_validation_accuracy
+                        if improvement >= min_improvement_threshold:
+                            best_validation_accuracy = validation_accuracy
+                            best_validation_loss = validation_loss
+                            validation_patience_counter = 0
+                            logger.info(f"✅ Validation improved by {improvement:.6f}")
+                        else:
+                            validation_patience_counter += 1
+                            logger.info(f"⏳ No validation improvement ({validation_patience_counter}/{validation_patience_limit})")
+                        
+                        # Overfitting detection
+                        accuracy_gap = current_round_accuracy - validation_accuracy
+                        if accuracy_gap > overfitting_threshold:
+                            consecutive_overfitting_rounds += 1
+                            logger.warning(f"⚠️  OVERFITTING DETECTED - Training accuracy ({current_round_accuracy:.4f}) exceeds validation accuracy ({validation_accuracy:.4f}) by {accuracy_gap:.4f}")
+                            logger.warning(f"   Consecutive overfitting rounds: {consecutive_overfitting_rounds}/{max_overfitting_rounds}")
+                        else:
+                            consecutive_overfitting_rounds = 0
+                            logger.info(f"✅ No overfitting detected (gap: {accuracy_gap:.4f})")
+                        
+                        # Early stopping checks
+                        early_stop_reason = None
+                        if validation_patience_counter >= validation_patience_limit:
+                            early_stop_reason = f"No validation improvement for {validation_patience_limit} rounds"
+                        elif consecutive_overfitting_rounds >= max_overfitting_rounds:
+                            early_stop_reason = f"Overfitting detected for {max_overfitting_rounds} consecutive rounds"
+                        
+                        if early_stop_reason:
+                            logger.warning(f"🛑 EARLY STOPPING TRIGGERED: {early_stop_reason}")
+                            logger.info(f"   Best validation accuracy: {best_validation_accuracy:.4f}")
+                            logger.info(f"   Best validation loss: {best_validation_loss:.6f}")
+                            logger.info(f"   Training completed at round {round_num}/{self.config.num_rounds}")
+                            break
+                    else:
+                        logger.warning(f"⚠️  Validation evaluation failed for round {round_num}")
+                    
                     # Process incentives for this round
                     if self.config.enable_incentives and self.incentive_manager:
                         self._process_round_incentives(
@@ -636,16 +804,21 @@ class BlockchainFederatedIncentiveSystem:
                     # self._collect_round_gas_data(round_num, round_results)
                     logger.info(f"⏭️  Skipping gas collection for round {round_num} to debug hanging")
                     
-                    # Store training history with client updates for accurate performance tracking
+                    # Store training history with client updates and validation metrics
                     import time
                     round_data = {
                         'round': round_num,
                         'timestamp': time.time(),
                         'accuracy': current_round_accuracy,
-                        'client_updates': round_results.get('client_updates', [])
+                        'client_updates': round_results.get('client_updates', []),
+                        'validation_metrics': validation_metrics if validation_metrics else None
                     }
                     self.training_history.append(round_data)
-                    logger.info(f"📝 Stored training history with client updates for round {round_num}")
+                    logger.info(f"📝 Stored training history with client updates and validation metrics for round {round_num}")
+                    
+                    # Store validation history separately for analysis
+                    if validation_metrics:
+                        self.validation_history = validation_history
                     
                     # Clear GPU cache after each round
                     if self.device.type == 'cuda':
@@ -662,7 +835,26 @@ class BlockchainFederatedIncentiveSystem:
                     logger.error(f"❌ Round {round_num} failed")
                     return False
             
-            logger.info("✅ Federated learning training with incentives completed!")
+            # Final validation summary
+            if validation_history['rounds']:
+                logger.info("📊 FINAL VALIDATION SUMMARY:")
+                logger.info(f"   Total rounds with validation: {len(validation_history['rounds'])}")
+                logger.info(f"   Best validation accuracy: {best_validation_accuracy:.4f}")
+                logger.info(f"   Best validation loss: {best_validation_loss:.6f}")
+                logger.info(f"   Final validation accuracy: {validation_history['validation_accuracies'][-1]:.4f}")
+                logger.info(f"   Final validation F1-score: {validation_history['validation_f1_scores'][-1]:.4f}")
+                
+                # Calculate validation trends
+                if len(validation_history['validation_accuracies']) > 1:
+                    accuracy_trend = validation_history['validation_accuracies'][-1] - validation_history['validation_accuracies'][0]
+                    logger.info(f"   Validation accuracy trend: {accuracy_trend:+.4f}")
+                
+                # Store final validation history
+                self.validation_history = validation_history
+            else:
+                logger.warning("⚠️  No validation data collected during training")
+            
+            logger.info("✅ Federated learning training with incentives and validation monitoring completed!")
             
             # Final gas data collection to ensure we capture all transactions
             logger.info("📊 Collecting final blockchain gas data...")
