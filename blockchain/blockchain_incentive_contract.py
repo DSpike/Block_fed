@@ -841,6 +841,9 @@ class BlockchainIncentiveManager:
                             'contribution_score': contribution_score
                         }
                         
+                        # Initialize reward_dist to None
+                        reward_dist = None
+                        
                         if contrib_info and contrib_info['verified']:
                             # Create reward distribution
                             # Ensure token_amount is an integer
@@ -860,27 +863,28 @@ class BlockchainIncentiveManager:
                                 contribution_score = float(contribution_score)
                             else:
                                 contribution_score = 0.0
-                        
-                        reward_dist = RewardDistribution(
-                            recipient_address=client_address,
+                            
+                            reward_dist = RewardDistribution(
+                                recipient_address=client_address,
                                 token_amount=token_amount,
-                            round_number=round_number,
-                            contribution_score=contribution_score,
+                                round_number=round_number,
+                                contribution_score=contribution_score,
                                 reputation_multiplier=1.0,  # Will be calculated by contract
-                            transaction_hash="",  # Will be set after distribution
-                            timestamp=time.time()
-                        )
-                        
-                        reward_distributions.append(reward_dist)
+                                transaction_hash="",  # Will be set after distribution
+                                timestamp=time.time()
+                            )
+                            
+                            reward_distributions.append(reward_dist)
                     
-                    # Store in history
-                    with self.lock:
-                        self.contribution_history.append({
-                            'round_number': round_number,
-                            'client_address': client_address,
-                            'metrics': metrics,
-                                    'reward': reward_dist
-                        })
+                    # Store in history (only if reward_dist was created)
+                    if reward_dist is not None:
+                        with self.lock:
+                            self.contribution_history.append({
+                                'round_number': round_number,
+                                'client_address': client_address,
+                                'metrics': metrics,
+                                'reward': reward_dist
+                            })
                 
             except Exception as e:
                 logger.error(f"Error processing contribution for {contribution.get('client_address', 'unknown')}: {str(e)}")

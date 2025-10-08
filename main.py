@@ -833,6 +833,16 @@ class BlockchainFederatedIncentiveSystem:
                 logger.warning(f"⚠️  Empty validation dataset for round {round_num}")
                 return None
             
+            # Use a subset to avoid CUDA memory issues
+            max_val_samples = 1000  # Limit validation samples
+            if len(X_val) > max_val_samples:
+                # Randomly sample subset
+                import numpy as np
+                indices = np.random.choice(len(X_val), max_val_samples, replace=False)
+                X_val = X_val[indices]
+                y_val = y_val[indices]
+                logger.info(f"Using {max_val_samples} validation samples (subset of {len(self.preprocessed_data['X_val'])})")
+            
             # Convert to tensors and move to device
             X_val_tensor = torch.FloatTensor(X_val).to(self.device)
             y_val_tensor = torch.LongTensor(y_val).to(self.device)
@@ -1191,11 +1201,8 @@ class BlockchainFederatedIncentiveSystem:
                 # Calculate reliability based on participation consistency
                 reliability = self._calculate_reliability_consistency(client_update.client_id, round_num)
                 
-                # Calculate reliability based on training loss
-                if hasattr(client_update, 'training_loss'):
-                    # Lower loss = higher reliability
-                    loss_factor = client_update.training_loss * 100
-                    reliability = max(80.0, min(100.0, 100.0 - loss_factor))
+                # Note: Using data-driven reliability calculation only
+                # Training loss-based reliability is disabled to avoid overriding data-driven metrics
                 
                 # Reliability is already calculated using data-driven metrics
                 # No additional client-specific variation needed
@@ -1353,7 +1360,7 @@ class BlockchainFederatedIncentiveSystem:
                 data_quality = self._calculate_data_quality_entropy(client_update.client_id)
                 data_quality_scores[client_update.client_id] = data_quality
                 
-                # Calculate participation consistency
+                # Calculate participation consistency (already normalized to 0-100)
                 participation_rate = self._calculate_reliability_consistency(client_update.client_id, round_num) / 100.0
                 participation_data[client_update.client_id] = participation_rate
                 
@@ -2950,9 +2957,9 @@ class BlockchainFederatedIncentiveSystem:
                 current_accuracy = 0.0
                 try:
                     # Compute accuracy on support set for monitoring
-                    with torch.no_grad():
-                        support_preds = torch.argmax(support_outputs, dim=1)
-                        current_accuracy = (support_preds == support_y).float().mean().item()
+                        with torch.no_grad():
+                            support_preds = torch.argmax(support_outputs, dim=1)
+                            current_accuracy = (support_preds == support_y).float().mean().item()
                 except:
                     current_accuracy = 0.0
                 
@@ -3174,10 +3181,100 @@ class ServiceManager:
             except:
                 pass
 
+def run_fully_decentralized_main():
+    """Run the fully decentralized system with PBFT consensus"""
+    import asyncio
+    from integration.fully_decentralized_system import run_fully_decentralized_training
+    
+    logger.info("🌐 Initializing Fully Decentralized Federated Learning System")
+    logger.info("=" * 80)
+    
+    # Configuration for 3 nodes
+    node_configs = [
+        {
+            'node_id': 'node_1',
+            'port': 8765,
+            'other_nodes': [('localhost', 8766), ('localhost', 8767)]
+        },
+        {
+            'node_id': 'node_2', 
+            'port': 8766,
+            'other_nodes': [('localhost', 8765), ('localhost', 8767)]
+        },
+        {
+            'node_id': 'node_3',
+            'port': 8767,
+            'other_nodes': [('localhost', 8765), ('localhost', 8766)]
+        }
+    ]
+    
+    logger.info("📊 Node Configuration:")
+    for i, config in enumerate(node_configs, 1):
+        logger.info(f"  Node {i}: {config['node_id']} on port {config['port']}")
+    
+    logger.info("🔄 Starting PBFT Consensus Training...")
+    
+    try:
+        # Run the fully decentralized training
+        results = asyncio.run(run_fully_decentralized_training(
+            num_rounds=10,
+            node_configs=node_configs
+        ))
+        
+        # Log results
+        logger.info("🎉 Fully Decentralized Training Completed!")
+        logger.info("=" * 80)
+        
+        overall_metrics = results['overall_metrics']
+        logger.info(f"📊 Overall Metrics:")
+        logger.info(f"  Total Rounds: {overall_metrics['total_rounds']}")
+        logger.info(f"  Successful Rounds: {overall_metrics['successful_rounds']}")
+        logger.info(f"  Success Rate: {overall_metrics.get('success_rate', 0):.2%}")
+        logger.info(f"  Average Consensus Time: {overall_metrics['average_consensus_time']:.2f}s")
+        
+        # Log per-round metrics
+        logger.info("📈 Round-by-Round Results:")
+        for round_data in results['rounds']:
+            logger.info(f"  Round {round_data['round_number'] + 1}: "
+                       f"{round_data['successful_nodes']}/{round_data['total_nodes']} nodes, "
+                       f"Consensus Time: {round_data['average_consensus_time']:.2f}s, "
+                       f"Success Rate: {round_data['consensus_success_rate']:.2%}")
+        
+        # Log node-specific metrics
+        logger.info("🔍 Node-Specific Metrics:")
+        for node_id, metrics in results['node_metrics'].items():
+            consensus_metrics = metrics['consensus_metrics']
+            logger.info(f"  {node_id}:")
+            logger.info(f"    Total Rounds: {consensus_metrics['total_rounds']}")
+            logger.info(f"    Successful Consensus: {consensus_metrics['successful_consensus']}")
+            logger.info(f"    Average Consensus Time: {consensus_metrics['average_consensus_time']:.2f}s")
+            logger.info(f"    Leader Elections: {consensus_metrics['leader_elections']}")
+        
+        # Save results
+        import json
+        with open('fully_decentralized_results.json', 'w') as f:
+            json.dump(results, f, indent=2, default=str)
+        
+        logger.info("💾 Results saved to 'fully_decentralized_results.json'")
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"❌ Fully decentralized training failed: {e}")
+        raise
+
 def main():
     """Main function to run the enhanced system with incentives"""
     logger.info("🚀 Enhanced Blockchain-Enabled Federated Learning with Incentive Mechanisms")
     logger.info("=" * 80)
+    
+    # Check if fully decentralized mode is requested
+    import sys
+    fully_decentralized = '--decentralized' in sys.argv or '--fully-decentralized' in sys.argv
+    
+    if fully_decentralized:
+        logger.info("🌐 Running in FULLY DECENTRALIZED mode with PBFT consensus")
+        return run_fully_decentralized_main()
     
     # Initialize service manager
     service_manager = ServiceManager()

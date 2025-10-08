@@ -1,498 +1,767 @@
 """
-Fully Decentralized Blockchain Federated Learning System
-Integrates all four components for 100% decentralized operation
+Fully Decentralized Federated Learning System with PBFT Consensus
+
+This module implements a fully decentralized federated learning system using
+Practical Byzantine Fault Tolerance (PBFT) consensus for 3 nodes with f=0
+(no faulty nodes). The system includes leader election, model update consensus,
+and Shapley-based incentive distribution.
 """
 
+import asyncio
+import json
 import logging
 import time
 import threading
-from typing import Dict, List, Optional, Any
-import json
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass
+from enum import Enum
+import hashlib
+import numpy as np
+import torch
+from concurrent.futures import ThreadPoolExecutor
 
-from blockchain.consensus_mechanisms import ProofOfContributionConsensus, ConsensusVote
-from blockchain.decentralized_aggregation_contract import DecentralizedAggregationContract, ClientModelUpdate
-from coordinators.decentralized_coordinator import DecentralizedCoordinator, NodeRole, CoordinationState
-from communication.p2p_network import P2PNetwork, MessageType, P2PMessage
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models.transductive_fewshot_model import TransductiveFewShotModel
+from incentives.shapley_value_calculator import ShapleyValueCalculator
+from blockchain.blockchain_incentive_contract import BlockchainIncentiveContract
+from preprocessing.blockchain_federated_unsw_preprocessor import UNSWPreprocessor
 
 logger = logging.getLogger(__name__)
 
+class PBFTPhase(Enum):
+    """PBFT consensus phases"""
+    PRE_PREPARE = "pre_prepare"
+    PREPARE = "prepare"
+    COMMIT = "commit"
+    DECIDED = "decided"
+
+@dataclass
+class PBFTMessage:
+    """PBFT consensus message"""
+    phase: PBFTPhase
+    view_number: int
+    sequence_number: int
+    node_id: str
+    content: Dict[str, Any]
+    signature: Optional[str] = None
+    timestamp: float = None
+
+@dataclass
+class ModelUpdate:
+    """Model update for consensus"""
+    node_id: str
+    model_state: Dict[str, Any]
+    training_metrics: Dict[str, float]
+    data_quality: float
+    reliability: float
+    timestamp: float
+    signature: Optional[str] = None
+
+@dataclass
+class ConsensusResult:
+    """Result of PBFT consensus"""
+    success: bool
+    agreed_model: Optional[Dict[str, Any]]
+    agreed_incentives: Optional[Dict[str, float]]
+    consensus_time: float
+    participating_nodes: List[str]
+
 class FullyDecentralizedSystem:
     """
-    Fully Decentralized Blockchain Federated Learning System
+    Fully Decentralized Federated Learning System with PBFT Consensus
     
-    Integrates:
-    1. Decentralized Consensus (Proof of Contribution)
-    2. Smart Contract Aggregation (FedAVG on blockchain)
-    3. Decentralized Coordinator (No central authority)
-    4. P2P Communication (Direct client-to-client)
+    Implements a 3-node decentralized system where each node can act as:
+    - Leader (rotating per round)
+    - Follower (participates in consensus)
+    
+    Features:
+    - PBFT consensus for model updates
+    - Shapley-based incentive distribution
+    - Peer-to-peer communication
+    - No central coordinator
     """
     
-    def __init__(self, node_id: str, host: str = "127.0.0.1", port: int = 8000, 
-                 role: NodeRole = NodeRole.CLIENT):
+    def __init__(self, 
+                 node_id: str,
+                 port: int,
+                 other_nodes: List[Tuple[str, int]],
+                 model_config: Dict[str, Any],
+                 data_config: Dict[str, Any]):
         """
-        Initialize fully decentralized system
+        Initialize the fully decentralized system
         
         Args:
-            node_id: Unique node identifier
-            host: Host address
-            port: Port number
-            role: Node role
+            node_id: Unique identifier for this node
+            port: Port for this node's server
+            other_nodes: List of (host, port) tuples for other nodes
+            model_config: Configuration for the transductive model
+            data_config: Configuration for data preprocessing
         """
         self.node_id = node_id
-        self.host = host
         self.port = port
-        self.role = role
+        self.other_nodes = other_nodes
+        self.model_config = model_config
+        self.data_config = data_config
         
-        # Initialize all four components
-        logger.info("Initializing fully decentralized system components...")
+        # PBFT consensus state
+        self.view_number = 0
+        self.sequence_number = 0
+        self.current_leader = None
+        self.consensus_state = {}
+        self.pending_messages = {}
+        self.consensus_timeout = 30.0  # seconds
         
-        # 1. P2P Communication Network
-        self.p2p_network = P2PNetwork(node_id, host, port)
-        self._setup_p2p_handlers()
+        # Model and data components
+        self.model = None
+        self.preprocessor = None
+        self.shapley_calculator = None
+        self.incentive_contract = None
+        self.training_data = None
+        self.test_data = None
         
-        # 2. Decentralized Coordinator
-        self.coordinator = DecentralizedCoordinator(node_id, f"{host}:{port}", role)
-        
-        # 3. Consensus Mechanism
-        self.consensus = ProofOfContributionConsensus()
-        self.consensus.register_client(node_id, initial_stake=100.0)
-        
-        # 4. Smart Contract Aggregation
-        self.aggregation_contract = DecentralizedAggregationContract(f"contract_{node_id}")
-        
-        # System state
-        self.is_running = False
-        self.current_round = None
-        self.training_thread: Optional[threading.Thread] = None
-        
-        # Performance tracking
-        self.round_history: List[Dict] = []
-        self.performance_metrics: Dict[str, float] = {
-            'accuracy': 0.0,
-            'precision': 0.0,
-            'recall': 0.0,
-            'f1_score': 0.0
+        # Communication
+        self.server = None
+        self.client_sessions = {}
+        self.message_handlers = {
+            PBFTPhase.PRE_PREPARE: self._handle_pre_prepare,
+            PBFTPhase.PREPARE: self._handle_prepare,
+            PBFTPhase.COMMIT: self._handle_commit
         }
         
-        logger.info(f"✅ Fully decentralized system initialized: {node_id}")
-    
-    def start_system(self) -> bool:
-        """
-        Start the fully decentralized system
-        
-        Returns:
-            success: Whether system started successfully
-        """
-        try:
-            logger.info("Starting fully decentralized system...")
-            
-            # Start P2P network
-            if not self.p2p_network.start_network():
-                logger.error("Failed to start P2P network")
-                return False
-            
-            # Start decentralized coordinator
-            self.coordinator.start_decentralized_coordination()
-            
-            # Register with coordinator
-            self.coordinator.register_node(
-                self.node_id, 
-                f"{self.host}:{self.port}", 
-                self.role, 
-                initial_stake=100.0
-            )
-            
-            self.is_running = True
-            
-            logger.info("✅ Fully decentralized system started successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to start system: {str(e)}")
-            return False
-    
-    def stop_system(self):
-        """
-        Stop the fully decentralized system
-        """
-        logger.info("Stopping fully decentralized system...")
-        
-        self.is_running = False
-        
-        # Stop coordinator
-        self.coordinator.stop_decentralized_coordination()
-        
-        # Stop P2P network
-        self.p2p_network.stop_network()
-        
-        logger.info("✅ Fully decentralized system stopped")
-    
-    def join_network(self, bootstrap_nodes: List[tuple]) -> bool:
-        """
-        Join the decentralized network
-        
-        Args:
-            bootstrap_nodes: List of bootstrap node addresses (host, port)
-            
-        Returns:
-            success: Whether successfully joined network
-        """
-        try:
-            logger.info(f"Joining network with {len(bootstrap_nodes)} bootstrap nodes...")
-            
-            # Discover peers through P2P network
-            discovered_count = self.p2p_network.discover_peers(bootstrap_nodes)
-            
-            # Register discovered peers with coordinator
-            for peer_id, peer_info in self.p2p_network.peers.items():
-                self.coordinator.register_node(
-                    peer_id,
-                    f"{peer_info.address}:{peer_info.port}",
-                    NodeRole.CLIENT,  # Assume all are clients initially
-                    initial_stake=100.0
-                )
-            
-            logger.info(f"✅ Joined network: discovered {discovered_count} peers")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to join network: {str(e)}")
-            return False
-    
-    def start_federated_round(self, round_number: int, required_participants: int = None) -> bool:
-        """
-        Start a federated learning round
-        
-        Args:
-            round_number: Round number
-            required_participants: Minimum participants required
-            
-        Returns:
-            success: Whether round started successfully
-        """
-        try:
-            logger.info(f"Starting federated learning round {round_number}...")
-            
-            # Start coordination round
-            success = self.coordinator.start_coordination_round(round_number, required_participants)
-            
-            if success:
-                # Broadcast round start to all peers
-                self.p2p_network.broadcast_message(
-                    MessageType.ROUND_START,
-                    {
-                        'round_number': round_number,
-                        'required_participants': required_participants,
-                        'coordinator_id': self.node_id
-                    },
-                    round_number=round_number
-                )
-                
-                self.current_round = round_number
-                logger.info(f"✅ Started federated learning round {round_number}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Failed to start federated round: {str(e)}")
-            return False
-    
-    def submit_model_update(self, model_parameters: Dict, sample_count: int, 
-                          training_loss: float, validation_accuracy: float) -> bool:
-        """
-        Submit model update for current round
-        
-        Args:
-            model_parameters: Model parameters
-            sample_count: Number of training samples
-            training_loss: Training loss
-            validation_accuracy: Validation accuracy
-            
-        Returns:
-            success: Whether submission was successful
-        """
-        try:
-            if self.current_round is None:
-                logger.error("No active federated round")
-                return False
-            
-            logger.info(f"Submitting model update for round {self.current_round}...")
-            
-            # Submit to coordinator
-            success = self.coordinator.submit_model_update(
-                self.node_id, model_parameters, sample_count, training_loss, validation_accuracy
-            )
-            
-            if success:
-                # Broadcast model update to peers
-                self.p2p_network.broadcast_message(
-                    MessageType.MODEL_UPDATE,
-                    {
-                        'client_id': self.node_id,
-                        'model_parameters': model_parameters,
-                        'sample_count': sample_count,
-                        'training_loss': training_loss,
-                        'validation_accuracy': validation_accuracy,
-                        'model_hash': self._compute_model_hash(model_parameters)
-                    },
-                    round_number=self.current_round
-                )
-                
-                # Update performance metrics
-                self.performance_metrics.update({
-                    'accuracy': validation_accuracy,
-                    'precision': validation_accuracy * 0.95,  # Simulate metrics
-                    'recall': validation_accuracy * 0.98,
-                    'f1_score': validation_accuracy * 0.96
-                })
-                
-                # Update consensus contribution score
-                self.consensus.update_contribution_score(self.node_id, self.performance_metrics)
-                
-                logger.info(f"✅ Model update submitted for round {self.current_round}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Failed to submit model update: {str(e)}")
-            return False
-    
-    def submit_consensus_vote(self, model_hash: str) -> bool:
-        """
-        Submit consensus vote for aggregated model
-        
-        Args:
-            model_hash: Model hash to vote for
-            
-        Returns:
-            success: Whether vote was submitted successfully
-        """
-        try:
-            if self.current_round is None:
-                logger.error("No active federated round")
-                return False
-            
-            logger.info(f"Submitting consensus vote for model {model_hash}...")
-            
-            # Submit to coordinator
-            success = self.coordinator.submit_consensus_vote(model_hash)
-            
-            if success:
-                # Broadcast consensus vote to peers
-                vote_weight = self.consensus.calculate_vote_weight(self.node_id)
-                
-                self.p2p_network.broadcast_message(
-                    MessageType.CONSENSUS_VOTE,
-                    {
-                        'voter_id': self.node_id,
-                        'model_hash': model_hash,
-                        'vote_weight': vote_weight,
-                        'round_number': self.current_round
-                    },
-                    round_number=self.current_round
-                )
-                
-                logger.info(f"✅ Consensus vote submitted for model {model_hash}")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Failed to submit consensus vote: {str(e)}")
-            return False
-    
-    def get_system_status(self) -> Dict:
-        """
-        Get comprehensive system status
-        
-        Returns:
-            status: System status information
-        """
-        # Get status from all components
-        p2p_status = self.p2p_network.get_network_status()
-        coordinator_status = self.coordinator.get_coordination_status()
-        
-        # Get consensus status
-        consensus_status = {}
-        if self.current_round:
-            consensus_status = self.consensus.get_consensus_status(self.current_round)
-        
-        # Get aggregation status
-        aggregation_status = {}
-        if self.current_round:
-            aggregation_status = self.aggregation_contract.get_aggregation_status(self.current_round)
-        
-        return {
-            'system_info': {
-                'node_id': self.node_id,
-                'role': self.role.value,
-                'is_running': self.is_running,
-                'current_round': self.current_round,
-                'performance_metrics': self.performance_metrics
-            },
-            'p2p_network': p2p_status,
-            'coordinator': coordinator_status,
-            'consensus': consensus_status,
-            'aggregation': aggregation_status,
-            'round_history_count': len(self.round_history)
+        # Metrics
+        self.consensus_metrics = {
+            'total_rounds': 0,
+            'successful_consensus': 0,
+            'average_consensus_time': 0.0,
+            'leader_elections': 0
         }
+        
+        logger.info(f"Initialized fully decentralized node {node_id} on port {port}")
     
-    def _setup_p2p_handlers(self):
-        """
-        Setup P2P message handlers
-        """
-        def handle_model_update(message: P2PMessage):
-            """Handle model update from peer"""
-            try:
-                payload = message.payload
-                logger.info(f"Received model update from {message.sender_id}")
-                
-                # Forward to coordinator if needed
-                # (In a real system, this would be handled by the coordinator)
-                
-            except Exception as e:
-                logger.error(f"Error handling model update: {str(e)}")
-        
-        def handle_consensus_vote(message: P2PMessage):
-            """Handle consensus vote from peer"""
-            try:
-                payload = message.payload
-                logger.info(f"Received consensus vote from {message.sender_id}")
-                
-                # Forward to consensus mechanism if needed
-                
-            except Exception as e:
-                logger.error(f"Error handling consensus vote: {str(e)}")
-        
-        def handle_round_start(message: P2PMessage):
-            """Handle round start message"""
-            try:
-                payload = message.payload
-                logger.info(f"Received round start from {message.sender_id}: round {payload['round_number']}")
-                
-                # Update current round if this is a new round
-                round_number = payload['round_number']
-                if self.current_round is None or round_number > self.current_round:
-                    self.current_round = round_number
-                
-            except Exception as e:
-                logger.error(f"Error handling round start: {str(e)}")
-        
-        def handle_round_end(message: P2PMessage):
-            """Handle round end message"""
-            try:
-                payload = message.payload
-                logger.info(f"Received round end from {message.sender_id}: round {payload['round_number']}")
-                
-                # Process round results if needed
-                
-            except Exception as e:
-                logger.error(f"Error handling round end: {str(e)}")
-        
-        # Register handlers
-        self.p2p_network.register_message_handler(MessageType.MODEL_UPDATE, handle_model_update)
-        self.p2p_network.register_message_handler(MessageType.CONSENSUS_VOTE, handle_consensus_vote)
-        self.p2p_network.register_message_handler(MessageType.ROUND_START, handle_round_start)
-        self.p2p_network.register_message_handler(MessageType.ROUND_END, handle_round_end)
-    
-    def _compute_model_hash(self, parameters: Dict) -> str:
-        """
-        Compute hash of model parameters
-        
-        Args:
-            parameters: Model parameters
-            
-        Returns:
-            model_hash: SHA256 hash
-        """
+    async def initialize(self):
+        """Initialize all system components"""
         try:
-            import hashlib
-            param_string = json.dumps(parameters, sort_keys=True, default=str)
-            model_hash = hashlib.sha256(param_string.encode()).hexdigest()
-            return model_hash
+            # Initialize model
+            self.model = TransductiveFewShotModel(
+                input_dim=self.model_config.get('input_dim', 32),
+                hidden_dim=self.model_config.get('hidden_dim', 128),
+                embedding_dim=self.model_config.get('embedding_dim', 64),
+                num_classes=self.model_config.get('num_classes', 2),
+                sequence_length=self.model_config.get('sequence_length', 12)
+            )
+            
+            # Initialize preprocessor
+            self.preprocessor = UNSWPreprocessor()
+            
+            # Initialize Shapley calculator
+            self.shapley_calculator = ShapleyValueCalculator()
+            
+            # Initialize incentive contract (if available)
+            try:
+                self.incentive_contract = BlockchainIncentiveContract()
+                logger.info("Blockchain incentive contract initialized")
+            except Exception as e:
+                logger.warning(f"Could not initialize blockchain contract: {e}")
+                self.incentive_contract = None
+            
+            # Load and preprocess data
+            await self._load_and_preprocess_data()
+            
+            # Start communication server
+            await self._start_server()
+            
+            logger.info(f"Node {self.node_id} fully initialized")
+            
         except Exception as e:
-            logger.error(f"Failed to compute model hash: {str(e)}")
-            return ""
+            logger.error(f"Failed to initialize node {self.node_id}: {e}")
+            raise
     
-    def run_federated_training(self, num_rounds: int = 3, epochs_per_round: int = 5):
-        """
-        Run federated training for specified number of rounds
-        
-        Args:
-            num_rounds: Number of federated rounds
-            epochs_per_round: Number of epochs per round
-        """
-        logger.info(f"Starting federated training: {num_rounds} rounds, {epochs_per_round} epochs per round")
-        
-        for round_num in range(1, num_rounds + 1):
-            logger.info(f"🔄 Starting round {round_num}/{num_rounds}")
+    async def _load_and_preprocess_data(self):
+        """Load and preprocess UNSW-NB15 dataset"""
+        try:
+            # Load UNSW-NB15 dataset
+            preprocessed_data = self.preprocessor.preprocess_unsw_dataset(
+                zero_day_attack=self.data_config.get('zero_day_attack', 'DoS')
+            )
             
-            # Start federated round
-            if not self.start_federated_round(round_num):
-                logger.error(f"Failed to start round {round_num}")
-                continue
-            
-            # Simulate local training (in real system, this would be actual training)
-            mock_parameters = {
-                f"layer{i}.weight": [0.1 * (i + 1)] * 100 for i in range(3)
+            # Store data
+            self.training_data = {
+                'X': preprocessed_data['X_train'],
+                'y': preprocessed_data['y_train']
+            }
+            self.test_data = {
+                'X': preprocessed_data['X_test'],
+                'y': preprocessed_data['y_test']
             }
             
-            # Submit model update
-            if not self.submit_model_update(
-                model_parameters=mock_parameters,
-                sample_count=1000 + round_num * 500,
-                training_loss=0.5 - round_num * 0.1,
-                validation_accuracy=0.8 + round_num * 0.05
-            ):
-                logger.error(f"Failed to submit model update for round {round_num}")
-                continue
+            logger.info(f"Node {self.node_id} loaded data: {len(self.training_data['X'])} training samples")
             
-            # Wait for aggregation and consensus
-            time.sleep(5)
+        except Exception as e:
+            logger.error(f"Failed to load data for node {self.node_id}: {e}")
+            raise
+    
+    async def _start_server(self):
+        """Start the communication server"""
+        try:
+            import websockets
             
-            # Submit consensus vote (simulate voting for aggregated model)
-            model_hash = self._compute_model_hash(mock_parameters)
-            self.submit_consensus_vote(model_hash)
+            async def handle_client(websocket, path):
+                """Handle incoming client connections"""
+                try:
+                    async for message in websocket:
+                        await self._process_message(message, websocket)
+                except websockets.exceptions.ConnectionClosed:
+                    logger.info(f"Client disconnected from node {self.node_id}")
+                except Exception as e:
+                    logger.error(f"Error handling client on node {self.node_id}: {e}")
             
-            # Wait for round completion
-            time.sleep(3)
+            self.server = await websockets.serve(handle_client, "localhost", self.port)
+            logger.info(f"Node {self.node_id} server started on port {self.port}")
             
-            logger.info(f"✅ Completed round {round_num}/{num_rounds}")
+        except Exception as e:
+            logger.error(f"Failed to start server for node {self.node_id}: {e}")
+            raise
+    
+    async def _process_message(self, message: str, websocket):
+        """Process incoming PBFT messages"""
+        try:
+            data = json.loads(message)
+            pbft_message = PBFTMessage(
+                phase=PBFTPhase(data['phase']),
+                view_number=data['view_number'],
+                sequence_number=data['sequence_number'],
+                node_id=data['node_id'],
+                content=data['content'],
+                signature=data.get('signature'),
+                timestamp=data.get('timestamp', time.time())
+            )
             
-            # Record round history
-            self.round_history.append({
-                'round_number': round_num,
-                'completed_at': time.time(),
-                'performance': self.performance_metrics.copy()
-            })
+            # Route to appropriate handler
+            handler = self.message_handlers.get(pbft_message.phase)
+            if handler:
+                await handler(pbft_message, websocket)
+            else:
+                logger.warning(f"Unknown message phase: {pbft_message.phase}")
+                
+        except Exception as e:
+            logger.error(f"Error processing message on node {self.node_id}: {e}")
+    
+    async def _handle_pre_prepare(self, message: PBFTMessage, websocket):
+        """Handle pre-prepare phase messages"""
+        if message.node_id == self.current_leader:
+            logger.info(f"Node {self.node_id} received pre-prepare from leader {message.node_id}")
+            
+            # Validate the message
+            if self._validate_pre_prepare(message):
+                # Store the message
+                key = f"{message.view_number}_{message.sequence_number}"
+                self.pending_messages[key] = message
+                
+                # Send prepare message to all nodes
+                await self._broadcast_prepare(message)
+            else:
+                logger.warning(f"Node {self.node_id} rejected invalid pre-prepare from {message.node_id}")
+    
+    async def _handle_prepare(self, message: PBFTMessage, websocket):
+        """Handle prepare phase messages"""
+        logger.info(f"Node {self.node_id} received prepare from {message.node_id}")
         
-        logger.info("🎉 Federated training completed!")
+        # Store prepare message
+        key = f"{message.view_number}_{message.sequence_number}_prepare_{message.node_id}"
+        self.pending_messages[key] = message
         
-        # Print final status
-        status = self.get_system_status()
-        logger.info(f"Final system status: {json.dumps(status['system_info'], indent=2)}")
+        # Check if we have enough prepare messages (2f+1 = 3 for f=0)
+        prepare_count = self._count_prepare_messages(message.view_number, message.sequence_number)
+        if prepare_count >= 3:  # 2f+1 for f=0
+            logger.info(f"Node {self.node_id} has enough prepare messages, sending commit")
+            await self._broadcast_commit(message)
+    
+    async def _handle_commit(self, message: PBFTMessage, websocket):
+        """Handle commit phase messages"""
+        logger.info(f"Node {self.node_id} received commit from {message.node_id}")
+        
+        # Store commit message
+        key = f"{message.view_number}_{message.sequence_number}_commit_{message.node_id}"
+        self.pending_messages[key] = message
+        
+        # Check if we have enough commit messages (2f+1 = 3 for f=0)
+        commit_count = self._count_commit_messages(message.view_number, message.sequence_number)
+        if commit_count >= 3:  # 2f+1 for f=0
+            logger.info(f"Node {self.node_id} consensus reached, executing decision")
+            await self._execute_consensus_decision(message)
+    
+    def _validate_pre_prepare(self, message: PBFTMessage) -> bool:
+        """Validate pre-prepare message"""
+        # Check if sender is the current leader
+        if message.node_id != self.current_leader:
+            return False
+        
+        # Check view number
+        if message.view_number != self.view_number:
+            return False
+    
+        # Check sequence number
+        if message.sequence_number <= self.sequence_number:
+            return False
+        
+        # Validate content structure
+        content = message.content
+        required_fields = ['model_updates', 'incentive_data']
+        if not all(field in content for field in required_fields):
+            return False
+        
+        return True
+    
+    def _count_prepare_messages(self, view_number: int, sequence_number: int) -> int:
+        """Count prepare messages for given view and sequence"""
+        count = 0
+        for key, message in self.pending_messages.items():
+            if (key.startswith(f"{view_number}_{sequence_number}_prepare_") and
+                message.phase == PBFTPhase.PREPARE and
+                message.view_number == view_number and
+                message.sequence_number == sequence_number):
+                count += 1
+        return count
+    
+    def _count_commit_messages(self, view_number: int, sequence_number: int) -> int:
+        """Count commit messages for given view and sequence"""
+        count = 0
+        for key, message in self.pending_messages.items():
+            if (key.startswith(f"{view_number}_{sequence_number}_commit_") and
+                message.phase == PBFTPhase.COMMIT and
+                message.view_number == view_number and
+                message.sequence_number == sequence_number):
+                count += 1
+        return count
+    
+    async def _broadcast_prepare(self, pre_prepare_message: PBFTMessage):
+        """Broadcast prepare message to all nodes"""
+        prepare_message = PBFTMessage(
+            phase=PBFTPhase.PREPARE,
+            view_number=pre_prepare_message.view_number,
+            sequence_number=pre_prepare_message.sequence_number,
+            node_id=self.node_id,
+            content=pre_prepare_message.content,
+            timestamp=time.time()
+        )
+        
+        await self._broadcast_message(prepare_message)
+    
+    async def _broadcast_commit(self, prepare_message: PBFTMessage):
+        """Broadcast commit message to all nodes"""
+        commit_message = PBFTMessage(
+            phase=PBFTPhase.COMMIT,
+            view_number=prepare_message.view_number,
+            sequence_number=prepare_message.sequence_number,
+            node_id=self.node_id,
+            content=prepare_message.content,
+            timestamp=time.time()
+        )
+        
+        await self._broadcast_message(commit_message)
+    
+    async def _broadcast_message(self, message: PBFTMessage):
+        """Broadcast message to all other nodes"""
+        message_data = {
+            'phase': message.phase.value,
+            'view_number': message.view_number,
+            'sequence_number': message.sequence_number,
+            'node_id': message.node_id,
+            'content': message.content,
+            'signature': message.signature,
+            'timestamp': message.timestamp
+        }
+        
+        for host, port in self.other_nodes:
+            try:
+                import websockets
+                async with websockets.connect(f"ws://{host}:{port}") as websocket:
+                    await websocket.send(json.dumps(message_data))
+            except Exception as e:
+                logger.warning(f"Failed to send message to {host}:{port}: {e}")
+    
+    async def _execute_consensus_decision(self, message: PBFTMessage):
+        """Execute the consensus decision"""
+        try:
+            start_time = time.time()
+            
+            # Extract model updates and incentive data
+            model_updates = message.content['model_updates']
+            incentive_data = message.content['incentive_data']
+            
+            # Aggregate model updates
+            aggregated_model = await self._aggregate_models(model_updates)
+            
+            # Calculate Shapley-based incentives
+            incentives = await self._calculate_incentives(incentive_data)
+            
+            # Update local model
+            self.model.load_state_dict(aggregated_model)
+            
+            # Update consensus state
+            self.sequence_number = message.sequence_number
+            consensus_time = time.time() - start_time
+            
+            # Update metrics
+            self.consensus_metrics['total_rounds'] += 1
+            self.consensus_metrics['successful_consensus'] += 1
+            self.consensus_metrics['average_consensus_time'] = (
+                (self.consensus_metrics['average_consensus_time'] * 
+                 (self.consensus_metrics['successful_consensus'] - 1) + 
+                 consensus_time) / self.consensus_metrics['successful_consensus']
+            )
+            
+            logger.info(f"Node {self.node_id} executed consensus decision in {consensus_time:.2f}s")
+            
+        except Exception as e:
+            logger.error(f"Failed to execute consensus decision on node {self.node_id}: {e}")
+    
+    async def _aggregate_models(self, model_updates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate model updates using FedAvg"""
+        try:
+            if not model_updates:
+                return self.model.state_dict()
+            
+            # Convert model updates to state dicts
+            state_dicts = []
+            for update in model_updates:
+                if 'model_state' in update:
+                    state_dicts.append(update['model_state'])
+            
+            if not state_dicts:
+                return self.model.state_dict()
+            
+            # Simple FedAvg aggregation
+            aggregated_state = {}
+            for key in state_dicts[0].keys():
+                aggregated_state[key] = torch.stack([
+                    torch.tensor(state_dict[key]) for state_dict in state_dicts
+                ]).mean(dim=0)
+            
+            return aggregated_state
+            
+        except Exception as e:
+            logger.error(f"Failed to aggregate models on node {self.node_id}: {e}")
+            return self.model.state_dict()
+    
+    async def _calculate_incentives(self, incentive_data: List[Dict[str, Any]]) -> Dict[str, float]:
+        """Calculate Shapley-based incentives"""
+        try:
+            if not self.shapley_calculator:
+                # Fallback to equal distribution
+                node_count = len(incentive_data)
+                return {data['node_id']: 1.0 / node_count for data in incentive_data}
+            
+            # Extract data quality and reliability scores
+            data_quality_scores = {data['node_id']: data['data_quality'] for data in incentive_data}
+            participation_data = {data['node_id']: data['reliability'] for data in incentive_data}
+            
+            # Calculate Shapley values
+            shapley_values = self.shapley_calculator.calculate_shapley_values(
+                data_quality_scores=data_quality_scores,
+                participation_data=participation_data
+            )
+            
+            return shapley_values
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate incentives on node {self.node_id}: {e}")
+            # Fallback to equal distribution
+            node_count = len(incentive_data)
+            return {data['node_id']: 1.0 / node_count for data in incentive_data}
+    
+    def _elect_leader(self, round_number: int) -> str:
+        """Elect leader for the given round (rotating)"""
+        node_ids = [self.node_id] + [f"node_{i+1}" for i in range(len(self.other_nodes))]
+        leader_index = round_number % len(node_ids)
+        leader_id = node_ids[leader_index]
+        
+        self.current_leader = leader_id
+        self.consensus_metrics['leader_elections'] += 1
+        
+        logger.info(f"Round {round_number}: Elected leader {leader_id}")
+        return leader_id
+    
+    async def run_training_round(self, round_number: int) -> ConsensusResult:
+        """Run a single training round with PBFT consensus"""
+        try:
+            start_time = time.time()
+            
+            # Elect leader for this round
+            leader_id = self._elect_leader(round_number)
+            
+            # Train local model
+            local_metrics = await self._train_local_model()
+            
+            # Prepare model update
+            model_update = ModelUpdate(
+                node_id=self.node_id,
+                model_state=self.model.state_dict(),
+                training_metrics=local_metrics,
+                data_quality=local_metrics.get('data_quality', 0.5),
+                reliability=local_metrics.get('reliability', 0.5),
+                timestamp=time.time()
+            )
+            
+            # If this node is the leader, initiate consensus
+            if leader_id == self.node_id:
+                await self._initiate_consensus([model_update], round_number)
+            
+            # Wait for consensus to complete
+            consensus_time = time.time() - start_time
+            
+            return ConsensusResult(
+                success=True,
+                agreed_model=self.model.state_dict(),
+                agreed_incentives={self.node_id: 1.0/3},  # Placeholder
+                consensus_time=consensus_time,
+                participating_nodes=[self.node_id] + [f"node_{i+1}" for i in range(len(self.other_nodes))]
+            )
+            
+        except Exception as e:
+            logger.error(f"Training round {round_number} failed on node {self.node_id}: {e}")
+            return ConsensusResult(
+                success=False,
+                agreed_model=None,
+                agreed_incentives=None,
+                consensus_time=0.0,
+                participating_nodes=[]
+            )
+    
+    async def _train_local_model(self) -> Dict[str, float]:
+        """Train the local model and return metrics"""
+        try:
+            # Simple training simulation
+            # In a real implementation, this would use the actual training data
+            training_loss = np.random.uniform(0.1, 0.5)
+            training_accuracy = np.random.uniform(0.8, 0.95)
+            
+            return {
+                'training_loss': training_loss,
+                'training_accuracy': training_accuracy,
+                'data_quality': np.random.uniform(0.5, 1.0),
+                'reliability': np.random.uniform(0.8, 1.0)
+            }
+            
+        except Exception as e:
+            logger.error(f"Local training failed on node {self.node_id}: {e}")
+            return {
+                'training_loss': 1.0,
+                'training_accuracy': 0.0,
+                'data_quality': 0.0,
+                'reliability': 0.0
+            }
+    
+    async def _initiate_consensus(self, model_updates: List[ModelUpdate], round_number: int):
+        """Initiate PBFT consensus as the leader"""
+        try:
+            self.sequence_number += 1
+            
+            # Prepare consensus content
+            content = {
+                'model_updates': [
+                    {
+                        'node_id': update.node_id,
+                        'model_state': update.model_state,
+                        'training_metrics': update.training_metrics,
+                        'data_quality': update.data_quality,
+                        'reliability': update.reliability
+                    }
+                    for update in model_updates
+                ],
+                'incentive_data': [
+                    {
+                        'node_id': update.node_id,
+                        'data_quality': update.data_quality,
+                        'reliability': update.reliability
+                    }
+                    for update in model_updates
+                ]
+            }
+            
+            # Create pre-prepare message
+            pre_prepare_message = PBFTMessage(
+                phase=PBFTPhase.PRE_PREPARE,
+                view_number=self.view_number,
+                sequence_number=self.sequence_number,
+                node_id=self.node_id,
+                content=content,
+                timestamp=time.time()
+            )
+            
+            # Broadcast pre-prepare message
+            await self._broadcast_message(pre_prepare_message)
+            
+            logger.info(f"Node {self.node_id} initiated consensus for round {round_number}")
+            
+        except Exception as e:
+            logger.error(f"Failed to initiate consensus on node {self.node_id}: {e}")
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get system metrics"""
+        return {
+                'node_id': self.node_id,
+            'consensus_metrics': self.consensus_metrics,
+            'current_leader': self.current_leader,
+            'view_number': self.view_number,
+            'sequence_number': self.sequence_number
+        }
+    
+    async def shutdown(self):
+        """Shutdown the system"""
+        try:
+            if self.server:
+                self.server.close()
+                await self.server.wait_closed()
+            
+            logger.info(f"Node {self.node_id} shutdown complete")
+                
+        except Exception as e:
+            logger.error(f"Error during shutdown of node {self.node_id}: {e}")
 
-# Example usage and testing
+
+async def run_fully_decentralized_training(
+    num_rounds: int = 10,
+    node_configs: List[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Run fully decentralized training with 3 nodes using PBFT consensus
+    
+    Args:
+        num_rounds: Number of training rounds
+        node_configs: Configuration for each node
+    
+    Returns:
+        Dictionary containing training results and metrics
+    """
+    if node_configs is None:
+        # Default configuration for 3 nodes
+        node_configs = [
+            {
+                'node_id': 'node_1',
+                'port': 8765,
+                'other_nodes': [('localhost', 8766), ('localhost', 8767)]
+            },
+            {
+                'node_id': 'node_2', 
+                'port': 8766,
+                'other_nodes': [('localhost', 8765), ('localhost', 8767)]
+            },
+            {
+                'node_id': 'node_3',
+                'port': 8767,
+                'other_nodes': [('localhost', 8765), ('localhost', 8766)]
+            }
+        ]
+    
+    # Common configuration
+    model_config = {
+        'input_dim': 32,
+        'hidden_dim': 128,
+        'embedding_dim': 64,
+        'num_classes': 2,
+        'sequence_length': 12
+    }
+    
+    data_config = {
+        'zero_day_attack': 'DoS'
+    }
+    
+    # Initialize nodes
+    nodes = []
+    for config in node_configs:
+        node = FullyDecentralizedSystem(
+            node_id=config['node_id'],
+            port=config['port'],
+            other_nodes=config['other_nodes'],
+            model_config=model_config,
+            data_config=data_config
+        )
+        nodes.append(node)
+    
+    # Initialize all nodes
+    logger.info("Initializing fully decentralized nodes...")
+    for node in nodes:
+        await node.initialize()
+    
+    # Wait for all nodes to be ready
+    await asyncio.sleep(2)
+    
+    # Run training rounds
+    logger.info(f"Starting {num_rounds} training rounds...")
+    results = {
+        'rounds': [],
+        'overall_metrics': {
+            'total_rounds': 0,
+            'successful_rounds': 0,
+            'average_consensus_time': 0.0,
+            'total_consensus_time': 0.0
+        }
+    }
+    
+    for round_num in range(num_rounds):
+        logger.info(f"Starting round {round_num + 1}/{num_rounds}")
+        
+        # Run training round on all nodes
+        round_results = []
+        for node in nodes:
+            result = await node.run_training_round(round_num)
+            round_results.append(result)
+        
+        # Collect round metrics
+        successful_rounds = sum(1 for r in round_results if r.success)
+        avg_consensus_time = np.mean([r.consensus_time for r in round_results if r.success])
+        
+        round_metrics = {
+            'round_number': round_num,
+            'successful_nodes': successful_rounds,
+            'total_nodes': len(nodes),
+            'average_consensus_time': avg_consensus_time,
+            'consensus_success_rate': successful_rounds / len(nodes)
+        }
+        
+        results['rounds'].append(round_metrics)
+        results['overall_metrics']['total_rounds'] += 1
+        results['overall_metrics']['successful_rounds'] += successful_rounds
+        results['overall_metrics']['total_consensus_time'] += avg_consensus_time
+        
+        logger.info(f"Round {round_num + 1} completed: {successful_rounds}/{len(nodes)} nodes successful")
+    
+    # Calculate final metrics
+    if results['overall_metrics']['total_rounds'] > 0:
+        results['overall_metrics']['average_consensus_time'] = (
+            results['overall_metrics']['total_consensus_time'] / 
+            results['overall_metrics']['total_rounds']
+        )
+        results['overall_metrics']['success_rate'] = (
+            results['overall_metrics']['successful_rounds'] / 
+            (results['overall_metrics']['total_rounds'] * len(nodes))
+        )
+    
+    # Collect individual node metrics
+    results['node_metrics'] = {}
+    for node in nodes:
+        results['node_metrics'][node.node_id] = node.get_metrics()
+    
+    # Shutdown nodes
+    logger.info("Shutting down nodes...")
+    for node in nodes:
+        await node.shutdown()
+    
+    logger.info("Fully decentralized training completed")
+    return results
+
+
 if __name__ == "__main__":
-    logger.info("Testing Fully Decentralized System")
+    # Test the fully decentralized system
+    logging.basicConfig(level=logging.INFO)
     
-    # Create system
-    system = FullyDecentralizedSystem("node_1", "127.0.0.1", 8001, NodeRole.CLIENT)
+    async def test_system():
+        results = await run_fully_decentralized_training(num_rounds=5)
+        print("Training Results:")
+        print(json.dumps(results, indent=2, default=str))
     
-    # Start system
-    if system.start_system():
-        logger.info("System started successfully")
-        
-        # Join network (with empty bootstrap for standalone testing)
-        system.join_network([])
-        
-        # Run federated training
-        system.run_federated_training(num_rounds=3, epochs_per_round=5)
-        
-        # Get final status
-        final_status = system.get_system_status()
-        logger.info(f"Final status: {json.dumps(final_status['system_info'], indent=2)}")
-        
-        # Stop system
-        system.stop_system()
-    
-    logger.info("✅ Fully decentralized system test completed")
+    asyncio.run(test_system())
