@@ -1039,9 +1039,8 @@ class BlockchainFederatedIncentiveSystem:
                     
                     # Collect blockchain gas usage data immediately after incentive processing
                     # (when blockchain transactions are most likely to have occurred)
-                    # TEMPORARILY DISABLED TO DEBUG HANGING ISSUE
-                    # self._collect_round_gas_data(round_num, round_results)
-                    logger.info(f"⏭️  Skipping gas collection for round {round_num} to debug hanging")
+                    # Now using improved async gas collection with retry mechanisms
+                    self._collect_round_gas_data(round_num, round_results)
                     
                     # Store training history with client updates and validation metrics
                     import time
@@ -1421,9 +1420,9 @@ class BlockchainFederatedIncentiveSystem:
             # Fallback to equal values
             return {'client_1': 0.85, 'client_2': 0.85, 'client_3': 0.85}
     
-    def _collect_round_gas_data(self, round_num: int, round_results: Dict):
+    async def _collect_round_gas_data_async(self, round_num: int, round_results: Dict):
         """
-        Collect gas usage data for a federated learning round
+        Collect gas usage data for a federated learning round with async I/O and retry mechanisms
         
         Args:
             round_num: Current round number
@@ -1443,17 +1442,58 @@ class BlockchainFederatedIncentiveSystem:
         from blockchain.real_gas_collector import real_gas_collector
         self.gas_collector = real_gas_collector
         
-        # Get ALL gas data from the collector (not just specific round) with timeout protection
-        try:
-            all_gas_data = real_gas_collector.get_all_gas_data()
-        except Exception as e:
-            logger.warning(f"Failed to get gas data: {str(e)}. Using empty data.")
-            all_gas_data = {'transactions': [], 'total_transactions': 0}
+        # Retry mechanism for gas collection
+        max_retries = 3
+        retry_delay = 1.0  # seconds
         
-        # Simplified gas collection - just get all recent transactions
+        for attempt in range(max_retries):
+            try:
+                # Use asyncio to run the gas collection with timeout
+                import asyncio
+                import signal
+                
+                # Create a timeout wrapper for the gas collection
+                async def get_gas_data_with_timeout():
+                    # Run the blocking operation in a thread pool
+                    loop = asyncio.get_event_loop()
+                    return await loop.run_in_executor(
+                        None, 
+                        self._get_gas_data_safe, 
+                        round_num
+                    )
+                
+                # Set timeout for gas collection (5 seconds)
+                try:
+                    all_gas_data = await asyncio.wait_for(
+                        get_gas_data_with_timeout(), 
+                        timeout=5.0
+                    )
+                    break  # Success, exit retry loop
+                    
+                except asyncio.TimeoutError:
+                    logger.warning(f"Gas collection timeout on attempt {attempt + 1}/{max_retries}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                        continue
+                    else:
+                        logger.error(f"Gas collection failed after {max_retries} attempts")
+                        all_gas_data = {'transactions': [], 'total_transactions': 0}
+                        break
+                        
+            except Exception as e:
+                logger.warning(f"Gas collection attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                    continue
+                else:
+                    logger.error(f"Gas collection failed after {max_retries} attempts: {str(e)}")
+                    all_gas_data = {'transactions': [], 'total_transactions': 0}
+                    break
+        
+        # Process collected gas data
         collected_transactions = []
         
-        # Get all recent transactions (simplified to avoid potential deadlocks)
+        # Get recent transactions with improved error handling
         all_transactions = all_gas_data.get('transactions', [])
         if all_transactions:
             # Get the last few transactions from all data
@@ -1462,17 +1502,21 @@ class BlockchainFederatedIncentiveSystem:
         else:
             logger.info(f"No gas transactions available for round {round_num}")
         
-        # Add collected gas data to our collection
+        # Add collected gas data to our collection with error handling
         for transaction in collected_transactions:
-            self.blockchain_gas_data['transactions'].append(transaction['transaction_hash'])
-            self.blockchain_gas_data['ipfs_cids'].append(transaction.get('ipfs_cid', ''))
-            self.blockchain_gas_data['gas_used'].append(transaction['gas_used'])
-            self.blockchain_gas_data['block_numbers'].append(transaction['block_number'])
-            self.blockchain_gas_data['transaction_types'].append(transaction['transaction_type'])
-            self.blockchain_gas_data['rounds'].append(round_num)  # Associate with current round
+            try:
+                self.blockchain_gas_data['transactions'].append(transaction.get('transaction_hash', ''))
+                self.blockchain_gas_data['ipfs_cids'].append(transaction.get('ipfs_cid', ''))
+                self.blockchain_gas_data['gas_used'].append(transaction.get('gas_used', 0))
+                self.blockchain_gas_data['block_numbers'].append(transaction.get('block_number', 0))
+                self.blockchain_gas_data['transaction_types'].append(transaction.get('transaction_type', 'unknown'))
+                self.blockchain_gas_data['rounds'].append(round_num)  # Associate with current round
+            except Exception as e:
+                logger.warning(f"Error processing transaction data: {str(e)}")
+                continue
         
         total_transactions = len(collected_transactions)
-        total_gas = sum(tx['gas_used'] for tx in collected_transactions)
+        total_gas = sum(tx.get('gas_used', 0) for tx in collected_transactions)
         
         logger.info(f"Collected real gas data for round {round_num}: {total_transactions} transactions, {total_gas} total gas")
         
@@ -1481,6 +1525,75 @@ class BlockchainFederatedIncentiveSystem:
             logger.warning(f"⚠️  No gas data available anywhere - blockchain transactions may not be recording properly")
         elif total_transactions == 0:
             logger.info(f"ℹ️  No new gas data for round {round_num}, but {all_gas_data.get('total_transactions', 0)} total transactions available")
+    
+    def _get_gas_data_safe(self, round_num: int) -> Dict:
+        """
+        Safe wrapper for gas data collection with simplified processing
+        
+        Args:
+            round_num: Current round number
+            
+        Returns:
+            Dictionary with gas data
+        """
+        try:
+            from blockchain.real_gas_collector import real_gas_collector
+            
+            # Get only essential data to avoid complex processing
+            with real_gas_collector.lock:
+                if not real_gas_collector.gas_transactions:
+                    return {'transactions': [], 'total_transactions': 0}
+                
+                # Get only recent transactions (last 10) to avoid processing overhead
+                recent_transactions = real_gas_collector.gas_transactions[-10:]
+                
+                # Convert to simple dictionary format
+                transactions = []
+                for tx in recent_transactions:
+                    transactions.append({
+                        'transaction_hash': tx.transaction_hash,
+                        'transaction_type': tx.transaction_type,
+                        'gas_used': tx.gas_used,
+                        'block_number': tx.block_number,
+                        'ipfs_cid': tx.ipfs_cid or '',
+                        'round_number': tx.round_number,
+                        'timestamp': tx.timestamp
+                    })
+                
+                return {
+                    'transactions': transactions,
+                    'total_transactions': len(real_gas_collector.gas_transactions)
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in safe gas data collection: {str(e)}")
+            return {'transactions': [], 'total_transactions': 0}
+    
+    def _collect_round_gas_data(self, round_num: int, round_results: Dict):
+        """
+        Synchronous wrapper for gas collection (for backward compatibility)
+        
+        Args:
+            round_num: Current round number
+            round_results: Results from the federated round
+        """
+        import asyncio
+        
+        # Run the async version
+        try:
+            asyncio.run(self._collect_round_gas_data_async(round_num, round_results))
+        except Exception as e:
+            logger.error(f"Error in gas collection: {str(e)}")
+            # Fallback to minimal data collection
+            if not hasattr(self, 'blockchain_gas_data'):
+                self.blockchain_gas_data = {
+                    'transactions': [],
+                    'ipfs_cids': [],
+                    'gas_used': [],
+                    'block_numbers': [],
+                    'transaction_types': [],
+                    'rounds': []
+                }
     
     def _calculate_round_accuracy(self, round_results: Dict) -> float:
         """Calculate average accuracy for the round using memory-efficient evaluation"""
