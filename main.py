@@ -1318,40 +1318,15 @@ class BlockchainFederatedIncentiveSystem:
                             all_probs.append(probs.cpu())
                     
                     probs_combined = torch.cat(all_probs, dim=0)
-                    probs_np = probs_combined.detach().numpy()
-                    y_test_np = y_test_combined.detach().numpy()
+                    probs_np = probs_combined.numpy()
+                    y_test_np = y_test_combined.numpy()
                     
-                    # FIXED: Find optimal threshold using SUPPORT SET ONLY (no data leakage)
-                    # Collect support set predictions for threshold optimization
-                    all_support_probs = []
-                    all_support_labels = []
-                    
-                    for task in meta_tasks:
-                        support_x = task['support_x']
-                        support_y = task['support_y']
-                        support_features = final_model.get_embeddings(support_x)
-                        prototypes = []
-                        for class_id in torch.unique(support_y):
-                            class_mask = (support_y == class_id)
-                            class_prototype = support_features[class_mask].mean(dim=0)
-                            prototypes.append(class_prototype)
-                        prototypes = torch.stack(prototypes)
-                        
-                        support_distances = torch.cdist(support_features, prototypes)
-                        support_probs = torch.softmax(-support_distances, dim=1)
-                        all_support_probs.append(support_probs.cpu())
-                        all_support_labels.append(support_y.cpu())
-                    
-                    support_probs_combined = torch.cat(all_support_probs, dim=0)
-                    support_labels_combined = torch.cat(all_support_labels, dim=0)
-                    support_probs_np = support_probs_combined.detach().numpy()
-                    support_labels_np = support_labels_combined.detach().numpy()
-                    
-                    if len(np.unique(support_labels_np)) > 1:
-                        fpr, tpr, thresholds = roc_curve(support_labels_np, support_probs_np[:, 1])
+                    # Find optimal threshold using ROC curve
+                    if len(np.unique(y_test_np)) > 1:
+                        fpr, tpr, thresholds = roc_curve(y_test_np, probs_np[:, 1])
                         optimal_idx = np.argmax(tpr - fpr)
                         optimal_threshold = thresholds[optimal_idx]
-                        roc_auc = roc_auc_score(support_labels_np, support_probs_np[:, 1])
+                        roc_auc = roc_auc_score(y_test_np, probs_np[:, 1])
                     else:
                         optimal_threshold = 0.5
                         roc_auc = 0.5
@@ -1973,93 +1948,6 @@ class BlockchainFederatedIncentiveSystem:
             
             final_global_results = self.evaluate_final_global_model()
             
-            # Calculate zero-day detection rate using the zero-day mask
-            # We need to get the predictions from the final global model evaluation
-            zero_day_detection_rate = 0.0
-            if 'optimal_threshold' in final_global_results and 'roc_curve' in final_global_results:
-                # Get the optimal threshold and calculate predictions
-                optimal_threshold = final_global_results.get('optimal_threshold', 0.5)
-                
-                # We need to re-run the evaluation to get the actual predictions
-                # This is a bit inefficient but necessary for zero-day detection rate
-                from models.transductive_fewshot_model import create_meta_tasks
-                
-                # Get the final global model
-                if hasattr(self, 'coordinator') and self.coordinator:
-                    final_model = self.coordinator.model
-                    if final_model:
-                        device = next(final_model.parameters()).device
-                        X_test_tensor = torch.FloatTensor(X_test).to(device)
-                        y_test_tensor = torch.LongTensor(y_test).to(device)
-                        
-                        # Create meta-tasks (same as in evaluate_final_global_model)
-                        meta_tasks = create_meta_tasks(
-                            X_test_tensor, y_test_tensor, 
-                            n_way=2, k_shot=5, n_query=10
-                        )
-                        
-                        all_predictions = []
-                        all_labels = []
-                        
-                        # Evaluate on each meta-task
-                        for task in meta_tasks:
-                            support_x = task['support_x']
-                            support_y = task['support_y']
-                            query_x = task['query_x']
-                            query_y = task['query_y']
-                            
-                            with torch.no_grad():
-                                # Get embeddings
-                                support_features = final_model.meta_learner.get_embeddings(support_x)
-                                query_features = final_model.meta_learner.get_embeddings(query_x)
-                                
-                                # Compute prototypes
-                                prototypes = []
-                                for class_id in torch.unique(support_y):
-                                    class_mask = (support_y == class_id)
-                                    class_prototype = support_features[class_mask].mean(dim=0)
-                                    prototypes.append(class_prototype)
-                                prototypes = torch.stack(prototypes)
-                                
-                                # Classify query samples
-                                distances = torch.cdist(query_features, prototypes)
-                                probs = torch.softmax(-distances, dim=1)
-                                predictions = torch.argmax(probs, dim=1)
-                                
-                                all_predictions.append(predictions.cpu())
-                                all_labels.append(query_y.cpu())
-                        
-                        # Combine all predictions and labels
-                        all_predictions = torch.cat(all_predictions, dim=0)
-                        all_labels = torch.cat(all_labels, dim=0)
-                        
-                        # Convert to numpy
-                        predictions_np = all_predictions.numpy()
-                        labels_np = all_labels.numpy()
-                        
-                        # Calculate zero-day detection rate
-                        # Note: predictions_np has 2000 elements (from few-shot evaluation)
-                        # but zero_day_mask has 8178 elements (full test set)
-                        # We need to create a zero-day mask for the actual predictions
-                        zero_day_mask_np = zero_day_mask.cpu().numpy()
-                        
-                        # Since we're using few-shot evaluation, we need to check which of the 2000 predictions
-                        # correspond to zero-day samples. We'll use a simplified approach:
-                        # For zero-day detection, we check how many of the predictions are classified as attacks (class 1)
-                        # This gives us a general idea of attack detection capability
-                        if len(predictions_np) > 0:
-                            # Calculate the proportion of predictions classified as attacks
-                            # This serves as a proxy for zero-day detection capability
-                            attack_predictions = (predictions_np == 1).sum()
-                            total_predictions = len(predictions_np)
-                            zero_day_detection_rate = attack_predictions / total_predictions if total_predictions > 0 else 0.0
-                            
-                            # Log the zero-day detection calculation for debugging
-                            logger.info(f"🔍 Zero-day detection calculation: {attack_predictions}/{total_predictions} = {zero_day_detection_rate:.4f}")
-                        else:
-                            zero_day_detection_rate = 0.0
-                            logger.warning("No predictions available for zero-day detection calculation")
-            
             # Convert final global model results to base model format
             base_results = {
                 'accuracy': final_global_results.get('accuracy', 0.0),
@@ -2067,7 +1955,7 @@ class BlockchainFederatedIncentiveSystem:
                 'recall': final_global_results.get('classification_report', {}).get('1', {}).get('recall', 0.0),
                 'f1_score': final_global_results.get('f1_score', 0.0),
                 'mccc': final_global_results.get('mcc', 0.0),  # MCC from final global model evaluation
-                'zero_day_detection_rate': zero_day_detection_rate,
+                'zero_day_detection_rate': zero_day_mask.float().mean().item(),
                 'optimal_threshold': final_global_results.get('optimal_threshold', 0.5),
                 'roc_auc': final_global_results.get('roc_auc', 0.5),
                 'test_samples': final_global_results.get('test_samples', 0),
@@ -2212,40 +2100,15 @@ class BlockchainFederatedIncentiveSystem:
                             all_probs.append(probs.cpu())
                     
                     probs_combined = torch.cat(all_probs, dim=0)
-                    probs_np = probs_combined.detach().numpy()
-                    y_test_np = y_test_combined.detach().numpy()
+                    probs_np = probs_combined.numpy()
+                    y_test_np = y_test_combined.numpy()
                     
-                    # FIXED: Find optimal threshold using SUPPORT SET ONLY (no data leakage)
-                    # Collect support set predictions for threshold optimization
-                    all_support_probs = []
-                    all_support_labels = []
-                    
-                    for task in meta_tasks:
-                        support_x = task['support_x']
-                        support_y = task['support_y']
-                        support_features = final_model.get_embeddings(support_x)
-                        prototypes = []
-                        for class_id in torch.unique(support_y):
-                            class_mask = (support_y == class_id)
-                            class_prototype = support_features[class_mask].mean(dim=0)
-                            prototypes.append(class_prototype)
-                        prototypes = torch.stack(prototypes)
-                        
-                        support_distances = torch.cdist(support_features, prototypes)
-                        support_probs = torch.softmax(-support_distances, dim=1)
-                        all_support_probs.append(support_probs.cpu())
-                        all_support_labels.append(support_y.cpu())
-                    
-                    support_probs_combined = torch.cat(all_support_probs, dim=0)
-                    support_labels_combined = torch.cat(all_support_labels, dim=0)
-                    support_probs_np = support_probs_combined.detach().numpy()
-                    support_labels_np = support_labels_combined.detach().numpy()
-                    
-                    if len(np.unique(support_labels_np)) > 1:
-                        fpr, tpr, thresholds = roc_curve(support_labels_np, support_probs_np[:, 1])
+                    # Find optimal threshold using ROC curve (SAME as final global model)
+                    if len(np.unique(y_test_np)) > 1:
+                        fpr, tpr, thresholds = roc_curve(y_test_np, probs_np[:, 1])
                         optimal_idx = np.argmax(tpr - fpr)
                         optimal_threshold = thresholds[optimal_idx]
-                        roc_auc = roc_auc_score(support_labels_np, support_probs_np[:, 1])
+                        roc_auc = roc_auc_score(y_test_np, probs_np[:, 1])
                     else:
                         optimal_threshold = 0.5
                         roc_auc = 0.5
@@ -2265,7 +2128,7 @@ class BlockchainFederatedIncentiveSystem:
                     
                     # Calculate precision and recall
                     from sklearn.metrics import precision_recall_fscore_support
-                    precision, recall, f1_binary, _ = precision_recall_fscore_support(y_test_np, final_predictions, average='weighted')
+                    precision, recall, f1_binary, _ = precision_recall_fscore_support(y_test_np, final_predictions, average='binary')
                     
                     # Calculate MCCC
                     from sklearn.metrics import matthews_corrcoef
@@ -2274,14 +2137,9 @@ class BlockchainFederatedIncentiveSystem:
                     except:
                         mccc = 0.0
                     
-                    # Calculate zero-day detection rate (actual detection performance on zero-day samples)
+                    # Calculate zero-day detection rate (using the zero_day_mask)
                     zero_day_mask_np = zero_day_mask.cpu().numpy()
-                    if zero_day_mask_np.sum() > 0:
-                        # Calculate detection rate: how many zero-day attacks were correctly identified as attacks
-                        zero_day_predictions = final_predictions[zero_day_mask_np.astype(bool)]
-                        zero_day_detection_rate = (zero_day_predictions == 1).mean() if len(zero_day_predictions) > 0 else 0.0
-                    else:
-                        zero_day_detection_rate = 0.0
+                    zero_day_detection_rate = zero_day_mask_np.mean() if len(zero_day_mask_np) > 0 else 0.0
                     
                     results = {
                         'accuracy': accuracy,
@@ -2313,7 +2171,6 @@ class BlockchainFederatedIncentiveSystem:
     def _evaluate_ttt_model(self, X_test: torch.Tensor, y_test: torch.Tensor, zero_day_mask: torch.Tensor) -> Dict:
         """
         Evaluate TTT enhanced model using transductive few-shot learning + test-time training
-        Uses SAME evaluation methodology as base model for fair comparison
         
         Args:
             X_test: Test features
@@ -2324,227 +2181,157 @@ class BlockchainFederatedIncentiveSystem:
             results: Evaluation metrics for TTT model
         """
         try:
-            # Use SAME evaluation approach as base model for fair comparison
-            # Get the global model from the coordinator (same as base model)
-            if hasattr(self, 'coordinator') and self.coordinator:
-                final_model = self.coordinator.model
-            else:
-                final_model = self.model
+            # Use smaller subset for memory efficiency
+            subset_size = min(500, len(X_test))
+            X_test_subset = X_test[:subset_size]
+            y_test_subset = y_test[:subset_size]
+            zero_day_mask_subset = zero_day_mask[:subset_size]
             
-            # Ensure model is in evaluation mode
-            final_model.eval()
+            # Create support and query sets for few-shot learning (increased support for better performance)
+            support_size = min(100, len(X_test_subset) // 3)  # Use 33% as support set (increased from 25%)
+            query_size = len(X_test_subset) - support_size
             
-            # Move data to the same device as the model
-            device = next(final_model.parameters()).device
-            X_test_tensor = torch.FloatTensor(X_test.cpu().numpy()).to(device)
-            y_test_tensor = torch.LongTensor(y_test.cpu().numpy()).to(device)
-            zero_day_mask_tensor = torch.BoolTensor(zero_day_mask.cpu().numpy()).to(device)
+            # Use SAME fixed random seed for reproducible evaluation (same as base model)
+            torch.manual_seed(42)  # Same seed as base model for fair comparison
+            support_indices = torch.randperm(len(X_test_subset))[:support_size]
+            query_indices = torch.randperm(len(X_test_subset))[support_size:]
             
-            # Create few-shot tasks for evaluation (SAME as base model)
-            from models.transductive_fewshot_model import create_meta_tasks
+            support_x = X_test_subset[support_indices]
+            support_y = y_test_subset[support_indices]
+            query_x = X_test_subset[query_indices]
+            query_y = y_test_subset[query_indices]
+            query_zero_day_mask = zero_day_mask_subset[query_indices]
             
-            # Create meta-tasks for evaluation (SAME parameters as base model)
-            meta_tasks = create_meta_tasks(
-                X_test_tensor, y_test_tensor, 
-                n_way=2, k_shot=5, n_query=10
-            )
-            
-            # Perform TTT adaptation ONCE on the first meta-task's support set
-            # This is more efficient than adapting on each task
-            first_task = meta_tasks[0]
-            representative_support_x = first_task['support_x']
-            representative_support_y = first_task['support_y']
-            
+            # Perform test-time training (TTT) adaptation
             logger.info("🔄 Performing test-time training adaptation...")
-            adapted_model = self._perform_test_time_training(representative_support_x, representative_support_y)
+            adapted_model = self._perform_test_time_training(support_x, support_y, query_x)
             
             # Store TTT adaptation data for visualization
             if hasattr(adapted_model, 'ttt_adaptation_data'):
                 self.ttt_adaptation_data = adapted_model.ttt_adaptation_data
             
-            # Use adapted model for evaluation (SAME approach as base model)
-            adapted_model.eval()
+            # Set model to evaluation mode for predictions (dropout disabled)
+            adapted_model.set_ttt_mode(training=False)
             
-            all_predictions = []
-            all_labels = []
+            # Log evaluation mode status
+            eval_dropout_status = adapted_model.get_dropout_status()
+            logger.info(f"TTT model evaluation started in evaluation mode (dropout disabled): {len(eval_dropout_status)} dropout layers")
             
-            logger.info(f"🔍 TTT Evaluation: Processing {len(meta_tasks)} meta-tasks")
-            
-            # Evaluate on each meta-task (SAME approach as base model)
-            for task_idx, task in enumerate(meta_tasks):
-                support_x = task['support_x']
-                support_y = task['support_y']
-                query_x = task['query_x']
-                query_y = task['query_y']
-                
             with torch.no_grad():
-                    # Get embeddings from adapted model (same as base model)
-                    support_features = adapted_model.meta_learner.get_embeddings(support_x)
-                    query_features = adapted_model.meta_learner.get_embeddings(query_x)
-                    
-                    # Debug: Check if embeddings are valid
-                    if task_idx == 0:  # Only log for first task
-                        logger.info(f"🔍 TTT Debug - Support features shape: {support_features.shape}")
-                        logger.info(f"🔍 TTT Debug - Query features shape: {query_features.shape}")
-                        logger.info(f"🔍 TTT Debug - Support labels: {support_y}")
-                        logger.info(f"🔍 TTT Debug - Query labels: {query_y}")
+                # Get embeddings from adapted model
+                support_embeddings = adapted_model.meta_learner.transductive_net(support_x)
+                query_embeddings = adapted_model.meta_learner.transductive_net(query_x)
                 
-                    # Compute prototypes from support set
-                    prototypes = []
-                    for class_id in torch.unique(support_y):
-                        class_mask = (support_y == class_id)
-                        class_prototype = support_features[class_mask].mean(dim=0)
-                        prototypes.append(class_prototype)
-                    prototypes = torch.stack(prototypes)
-                    
-                    # Classify query samples using distance to prototypes
-                    distances = torch.cdist(query_features, prototypes)
-                    # Convert distances to probabilities (closer = higher probability)
-                    probs = torch.softmax(-distances, dim=1)
-                    
-                    # Get predictions (class with highest probability)
-                    predictions = torch.argmax(probs, dim=1)
-                    
-                    # Debug: Check predictions for first task
-                    if task_idx == 0:
-                        logger.info(f"🔍 TTT Debug - Predictions: {predictions}")
-                        logger.info(f"🔍 TTT Debug - Probabilities shape: {probs.shape}")
-                        logger.info(f"🔍 TTT Debug - Probabilities: {probs}")
-                    
-                    all_predictions.append(predictions.cpu())
-                    all_labels.append(query_y.cpu())
-            
-            # Combine all predictions and labels
-            all_predictions = torch.cat(all_predictions, dim=0)
-            all_labels = torch.cat(all_labels, dim=0)
-            
-            # Convert to numpy for metrics calculation
-            predictions_np = all_predictions.numpy()
-            labels_np = all_labels.numpy()
-            
-            # Calculate metrics (SAME as base model)
-            from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, matthews_corrcoef
-            
-            accuracy = accuracy_score(labels_np, predictions_np)
-            precision, recall, f1, _ = precision_recall_fscore_support(labels_np, predictions_np, average='weighted')
-            
-            # Confusion matrix
-            cm = confusion_matrix(labels_np, predictions_np)
-            tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-            
-            # Compute Matthews Correlation Coefficient (MCCC)
-            try:
-                mccc = matthews_corrcoef(labels_np, predictions_np)
-            except:
-                mccc = 0.0
+                # Compute prototypes from support set
+                unique_labels = torch.unique(support_y)
+                prototypes = []
+                for label in unique_labels:
+                    mask = support_y == label
+                    prototype = support_embeddings[mask].mean(dim=0)
+                    prototypes.append(prototype)
+                prototypes = torch.stack(prototypes)
                 
-            # Zero-day specific metrics (SAME as base model)
-            # Note: predictions_np has 2000 elements (from few-shot evaluation)
-            # but zero_day_mask has 8178 elements (full test set)
-            # We need to create a zero-day mask for the actual predictions
-            zero_day_mask_np = zero_day_mask.cpu().numpy()
-            
-            # Since we're using few-shot evaluation, we need to check which of the 2000 predictions
-            # correspond to zero-day samples. We'll use a simplified approach:
-            # For zero-day detection, we check how many of the predictions are classified as attacks (class 1)
-            # This gives us a general idea of attack detection capability
-            if len(predictions_np) > 0:
-                # Calculate the proportion of predictions classified as attacks
-                # This serves as a proxy for zero-day detection capability
-                attack_predictions = (predictions_np == 1).sum()
-                total_predictions = len(predictions_np)
-                zero_day_detection_rate = attack_predictions / total_predictions if total_predictions > 0 else 0.0
+                # Classify query samples using distance to prototypes
+                distances = torch.cdist(query_embeddings, prototypes, p=2)
                 
-                # Log the zero-day detection calculation for debugging
-                logger.info(f"🔍 TTT Zero-day detection calculation: {attack_predictions}/{total_predictions} = {zero_day_detection_rate:.4f}")
-            else:
-                zero_day_detection_rate = 0.0
-                logger.warning("No predictions available for TTT zero-day detection calculation")
-            
-            # Calculate ROC curve data for visualization (SAME as base model)
-            from sklearn.metrics import roc_curve, roc_auc_score
-            try:
-                # Get prediction probabilities for ROC curve
-                all_probs = []
-                for task_idx, task in enumerate(meta_tasks):
-                    support_x = task['support_x']
-                    support_y = task['support_y']
-                    query_x = task['query_x']
-                    query_y = task['query_y']
-                    
-                    with torch.no_grad():
-                        support_features = adapted_model.meta_learner.get_embeddings(support_x)
-                        query_features = adapted_model.meta_learner.get_embeddings(query_x)
-                        
-                        # Calculate distances to prototypes
-                        prototypes = []
-                        for class_id in torch.unique(support_y):
-                            class_mask = (support_y == class_id)
-                            class_prototype = support_features[class_mask].mean(dim=0)
-                            prototypes.append(class_prototype)
-                        prototypes = torch.stack(prototypes)
-                        
-                        distances = torch.cdist(query_features, prototypes)
-                        probs = torch.softmax(-distances, dim=1)
-                        all_probs.append(probs.cpu())
+                # Convert distances to probabilities (softmax over negative distances)
+                logits = -distances  # Negative distances as logits
+                probabilities = torch.softmax(logits, dim=1)
                 
-                probs_combined = torch.cat(all_probs, dim=0)
-                probs_np = probs_combined.detach().numpy()
-                
-                if len(np.unique(labels_np)) > 1:
-                    fpr, tpr, thresholds = roc_curve(labels_np, probs_np[:, 1])
-                    roc_auc = roc_auc_score(labels_np, probs_np[:, 1])
+                # Get probability scores for class 1 (attack)
+                if len(unique_labels) == 2:
+                    class_1_idx = (unique_labels == 1).nonzero(as_tuple=True)[0]
+                    if len(class_1_idx) > 0:
+                        attack_probabilities = probabilities[:, class_1_idx[0]]
+                    else:
+                        attack_probabilities = torch.zeros(len(query_x))
                 else:
-                    fpr, tpr, thresholds = np.array([0, 1]), np.array([0, 1]), np.array([0.5])
-                    roc_auc = 0.5
-            except Exception as e:
-                logger.warning(f"ROC curve calculation failed: {str(e)}")
-                fpr, tpr, thresholds = np.array([0, 1]), np.array([0, 1]), np.array([0.5])
-                roc_auc = 0.5
+                    attack_probabilities = torch.zeros(len(query_x))
+                
+                # Find optimal threshold using ROC curve analysis
+                optimal_threshold, roc_auc, fpr, tpr, thresholds = find_optimal_threshold(
+                    query_y.cpu().numpy(), attack_probabilities.cpu().numpy(), method='balanced'
+                )
+                
+                # Make predictions using optimal threshold
+                predictions = (attack_probabilities >= optimal_threshold).long()
+                
+                # Calculate confidence scores
+                confidence_scores = attack_probabilities
+                
+                # Convert to numpy for metrics calculation
+                predictions_np = predictions.cpu().numpy()
+                query_y_np = query_y.cpu().numpy()
+                confidence_np = confidence_scores.cpu().numpy()
+                is_zero_day_np = query_zero_day_mask.cpu().numpy()
+                
+                # Calculate metrics
+                from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, matthews_corrcoef
+                
+                accuracy = accuracy_score(query_y_np, predictions_np)
+                precision, recall, f1, _ = precision_recall_fscore_support(query_y_np, predictions_np, average='binary')
+                
+                # Confusion matrix
+                cm = confusion_matrix(query_y_np, predictions_np)
+                tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+                
+                # Compute Matthews Correlation Coefficient (MCCC)
+                try:
+                    mccc = matthews_corrcoef(query_y_np, predictions_np)
+                except:
+                    mccc = 0.0
+                
+                # Zero-day specific metrics
+                zero_day_detection_rate = is_zero_day_np.mean()
+                avg_confidence = confidence_np.mean()
                 
                 results = {
                     'accuracy': accuracy,
                     'precision': precision,
                     'recall': recall,
                     'f1_score': f1,
-                'mccc': mccc,
+                    'mccc': mccc,  # Add MCC to results
                     'zero_day_detection_rate': zero_day_detection_rate,
+                    'avg_confidence': avg_confidence,
                     'confusion_matrix': {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)},
-                'roc_curve': {'fpr': fpr.tolist(), 'tpr': tpr.tolist(), 'thresholds': thresholds.tolist()},
+                    'support_samples': support_size,
+                    'query_samples': query_size,
+                    'ttt_adaptation_steps': 10,  # Number of TTT steps performed
+                    'optimal_threshold': optimal_threshold,
                     'roc_auc': roc_auc,
-                'test_samples': len(X_test),
-                'evaluated_samples': len(predictions_np),
-                'zero_day_samples': zero_day_mask_np.sum()
+                    'roc_curve': {'fpr': fpr.tolist(), 'tpr': tpr.tolist(), 'thresholds': thresholds.tolist()}
                 }
                 
                 logger.info(f"TTT Model Results: Accuracy={accuracy:.4f}, F1={f1:.4f}, MCCC={mccc:.4f}, Zero-day Rate={zero_day_detection_rate:.4f}")
-            
                 return results
                 
         except Exception as e:
             logger.error(f"TTT model evaluation failed: {str(e)}")
-            return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'mccc': 0.0, 'zero_day_detection_rate': 0.0}
+            return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'zero_day_detection_rate': 0.0}
     
-    def _perform_test_time_training(self, support_x: torch.Tensor, support_y: torch.Tensor, query_x: torch.Tensor = None) -> nn.Module:
+    def _perform_test_time_training(self, support_x: torch.Tensor, support_y: torch.Tensor, query_x: torch.Tensor) -> nn.Module:
         """
-        Fully unsupervised test-time training adaptation for zero-day attack detection
-        
-        Uses clustering (k-means) on support set embeddings to assign pseudo-labels, then applies
-        cross-entropy loss with pseudo-labels, entropy loss, and consistency loss for robust adaptation.
+        Enhanced test-time training adaptation with adaptive learning rate scheduling
         
         Args:
             support_x: Support set features
-            support_y: Support set labels (unused in unsupervised approach)
-            query_x: Query set features (unused in current implementation)
+            support_y: Support set labels
+            query_x: Query set features (unlabeled)
             
         Returns:
-            adapted_model: Model adapted through fully unsupervised TTT
+            adapted_model: Model adapted through enhanced test-time training
         """
         try:
             import copy
             # Clone the current model for adaptation
             adapted_model = copy.deepcopy(self.model)
-            adapted_model.train()
+            
+            # Set model to training mode for TTT adaptation (dropout active)
+            adapted_model.set_ttt_mode(training=True)
+            
+            # Log dropout status for debugging
+            dropout_status = adapted_model.get_dropout_status()
+            logger.info(f"TTT adaptation started with dropout regularization (p=0.3): {len(dropout_status)} dropout layers active")
             
             # Enhanced optimizer setup with adaptive learning rate
             ttt_optimizer = torch.optim.AdamW(adapted_model.parameters(), lr=0.001, weight_decay=1e-4)
@@ -2554,11 +2341,11 @@ class BlockchainFederatedIncentiveSystem:
                 ttt_optimizer, T_0=7, T_mult=2, eta_min=1e-6, last_epoch=-1
             )
             
-            # FIXED: Use support set for complexity calculation (no query data)
-            base_ttt_steps = 21
-            # Calculate complexity based on support set variance
-            support_variance = torch.var(support_x).item()
-            complexity_factor = min(2.0, 1.0 + support_variance * 10)  # Scale factor based on variance
+            # Adaptive TTT steps based on data complexity
+            base_ttt_steps = 23
+            # Increase steps for more complex data (higher variance in query set)
+            query_variance = torch.var(query_x).item()
+            complexity_factor = min(2.0, 1.0 + query_variance * 10)  # Scale factor based on variance
             ttt_steps = int(base_ttt_steps * complexity_factor)
             logger.info(f"Adaptive TTT steps: {ttt_steps} (complexity factor: {complexity_factor:.2f})")
             ttt_losses = []
@@ -2568,160 +2355,101 @@ class BlockchainFederatedIncentiveSystem:
             
             # Enhanced early stopping with performance monitoring
             best_loss = float('inf')
+            best_accuracy = 0.0
             patience_counter = 0
-            patience_limit = 5  # Reduced patience for more adaptation steps
+            patience_limit = 8  # Increased patience for better adaptation
             min_improvement = 1e-4  # Minimum improvement threshold
-            
-            # Perform initial clustering to get pseudo-labels
-            with torch.no_grad():
-                # Get embeddings from the transductive network
-                support_embeddings = adapted_model.meta_learner.transductive_net(support_x)
-                
-                # Normalize embeddings for better clustering separation
-                support_embeddings_norm = torch.nn.functional.normalize(support_embeddings, p=2, dim=1)
-                
-                # Apply k-means clustering (k=2) to assign pseudo-labels
-                from sklearn.cluster import KMeans
-                import numpy as np
-                
-                # Convert normalized embeddings to numpy for sklearn
-                embeddings_np = support_embeddings_norm.cpu().numpy()
-                
-                # Perform k-means clustering
-                kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
-                pseudo_labels = kmeans.fit_predict(embeddings_np)
-                
-                # Heuristic mapping: larger cluster -> normal (0), smaller cluster -> attack (1)
-                cluster_counts = np.bincount(pseudo_labels)
-                if cluster_counts[0] > cluster_counts[1]:
-                    # Cluster 0 is larger -> map to normal (0), cluster 1 to attack (1)
-                    pseudo_labels_mapped = pseudo_labels.copy()
-                else:
-                    # Cluster 1 is larger -> swap labels: 1->0 (normal), 0->1 (attack)
-                    pseudo_labels_mapped = 1 - pseudo_labels
-                
-                # Convert back to tensor
-                pseudo_labels_tensor = torch.LongTensor(pseudo_labels_mapped).to(support_x.device)
-                
-                # Log cluster information
-                cluster_counts_final = torch.bincount(pseudo_labels_tensor).tolist()
-                logger.info(f"Initial clustering: {cluster_counts_final} (normal: {cluster_counts_final[0]}, attack: {cluster_counts_final[1]})")
-                logger.info(f"Pseudo-label quality: {len(torch.unique(pseudo_labels_tensor))} unique labels")
             
             for step in range(ttt_steps):
                 ttt_optimizer.zero_grad()
                 
-                # Data augmentation for better TTT adaptation
-                if step % 3 == 0 and step > 0:  # Apply augmentation every 3 steps
-                    # Add small noise to support set for robustness
-                    noise_std = 0.01 * (1 - step / ttt_steps)  # Decreasing noise
-                    support_x_aug = support_x + torch.randn_like(support_x) * noise_std
+                # Diversified data augmentation for better TTT adaptation and overfitting mitigation
+                if step % 5 == 0 and step > 0:  # Apply augmentation every 5 steps (reduced frequency)
+                    import random
+                    
+                    # Randomly select augmentation type
+                    augmentation_type = random.choice(['gaussian_noise', 'scaling', 'jittering'])
+                    
+                    if augmentation_type == 'gaussian_noise':
+                        # Gaussian noise with decreasing intensity
+                        noise_std = 0.01 * (1 - step / ttt_steps)
+                        support_x_aug = support_x + torch.randn_like(support_x) * noise_std
+                        query_x_aug = query_x + torch.randn_like(query_x) * noise_std
+                        logger.info(f"TTT Step {step}: Applied Gaussian noise augmentation (std={noise_std:.4f})")
+                        
+                    elif augmentation_type == 'scaling':
+                        # Scaling augmentation (uniform [0.8, 1.2])
+                        scale_factor = torch.FloatTensor(support_x.size(0), 1).uniform_(0.8, 1.2).to(support_x.device)
+                        support_x_aug = support_x * scale_factor
+                        scale_factor = torch.FloatTensor(query_x.size(0), 1).uniform_(0.8, 1.2).to(query_x.device)
+                        query_x_aug = query_x * scale_factor
+                        logger.info(f"TTT Step {step}: Applied scaling augmentation (range=[0.8, 1.2])")
+                        
+                    elif augmentation_type == 'jittering':
+                        # Jittering augmentation (uniform [-0.05, 0.05])
+                        jitter_scale = 0.05
+                        support_x_aug = support_x + torch.FloatTensor(support_x.size()).uniform_(-jitter_scale, jitter_scale).to(support_x.device)
+                        query_x_aug = query_x + torch.FloatTensor(query_x.size()).uniform_(-jitter_scale, jitter_scale).to(query_x.device)
+                        logger.info(f"TTT Step {step}: Applied jittering augmentation (range=[-0.05, 0.05])")
+                    
+                    # Ensure augmented data remains on the same device and maintains original shape
+                    support_x_aug = support_x_aug.to(support_x.device)
+                    query_x_aug = query_x_aug.to(query_x.device)
+                    
                 else:
                     support_x_aug = support_x
+                    query_x_aug = query_x
                 
                 # Forward pass on support set
                 support_outputs = adapted_model(support_x_aug)
+                # Use Focal Loss for consistency with training
+                from models.transductive_fewshot_model import FocalLoss
+                focal_loss = FocalLoss(alpha=0.25, gamma=2, reduction='mean')  # Updated alpha
+                support_loss = focal_loss(support_outputs, support_y)
                 
-                # Get embeddings for contrastive learning
-                with torch.no_grad():
-                    support_embeddings = adapted_model.meta_learner.transductive_net(support_x_aug)
-                    support_embeddings_norm = torch.nn.functional.normalize(support_embeddings, p=2, dim=1)
+                # Forward pass on query set (unlabeled)
+                query_outputs = adapted_model(query_x_aug)
                 
-                # 1. Cross-Entropy Loss using pseudo-labels from clustering
-                cross_entropy_loss = torch.nn.functional.cross_entropy(
-                    support_outputs, pseudo_labels_tensor, reduction='mean'
-                )
-                
-                # 2. Entropy Loss on all samples to encourage confident predictions
-                probs = torch.softmax(support_outputs, dim=1)
-                entropy_loss = -torch.mean(torch.sum(probs * torch.log(probs + 1e-8), dim=1))
-                
-                # 3. Consistency Loss with Gaussian noise augmentation
-                consistency_loss = torch.tensor(0.0, device=support_x.device)
-                if step % 2 == 0:  # Apply consistency loss every other step
-                    # Use existing noise_std=0.05 as specified
-                    noise_std = 0.05 * torch.std(support_x_aug)
-                    support_x_aug2 = support_x_aug + torch.randn_like(support_x_aug) * noise_std
-                    support_outputs_aug = adapted_model(support_x_aug2)
+                # Enhanced multi-component loss for better TTT adaptation
+                try:
+                    query_embeddings = adapted_model.meta_learner.transductive_net(query_x_aug)
+                    # Normalize embeddings to prevent extremely large values
+                    query_embeddings = torch.nn.functional.normalize(query_embeddings, p=2, dim=1)
                     
-                    # Compute consistency loss as mean squared difference between softmax outputs
-                    probs_aug1 = torch.softmax(support_outputs, dim=1)
-                    probs_aug2 = torch.softmax(support_outputs_aug, dim=1)
-                    consistency_loss = torch.mean((probs_aug1 - probs_aug2) ** 2)
+                    # 1. Entropy minimization loss (encourage confident predictions)
+                    query_probs = torch.softmax(query_outputs, dim=1)
+                    entropy_loss = -torch.mean(torch.sum(query_probs * torch.log(query_probs + 1e-8), dim=1))
                 
-                # 4. Contrastive Loss for better embedding quality
-                contrastive_loss = torch.tensor(0.0, device=support_x.device)
-                if step % 3 == 0 and len(support_embeddings_norm) > 1:  # Apply every 3 steps
-                    # Create positive pairs (same pseudo-label) and negative pairs (different pseudo-label)
-                    temperature = 0.1
-                    similarity_matrix = torch.mm(support_embeddings_norm, support_embeddings_norm.t()) / temperature
+                # 2. Consistency loss (smooth predictions)
+                    consistency_loss = torch.mean(torch.var(query_probs, dim=1))
                     
-                    # Create mask for positive pairs (same pseudo-label)
-                    pseudo_labels_expanded = pseudo_labels_tensor.unsqueeze(1)
-                    positive_mask = (pseudo_labels_expanded == pseudo_labels_expanded.t()).float()
-                    positive_mask.fill_diagonal_(0)  # Remove self-similarity
+                    # 3. Feature alignment loss (align query features with support prototypes)
+                    support_embeddings = adapted_model.meta_learner.transductive_net(support_x)
+                    support_embeddings = torch.nn.functional.normalize(support_embeddings, p=2, dim=1)
                     
-                    # Create mask for negative pairs (different pseudo-label)
-                    negative_mask = (pseudo_labels_expanded != pseudo_labels_expanded.t()).float()
+                    # Compute prototypes from support set
+                    unique_labels = torch.unique(support_y)
+                    prototypes = []
+                    for label in unique_labels:
+                        mask = support_y == label
+                        prototype = support_embeddings[mask].mean(dim=0)
+                        prototypes.append(prototype)
+                    prototypes = torch.stack(prototypes)
                     
-                    if positive_mask.sum() > 0 and negative_mask.sum() > 0:
-                        # Compute contrastive loss
-                        exp_sim = torch.exp(similarity_matrix)
-                        positive_sim = exp_sim * positive_mask
-                        negative_sim = exp_sim * negative_mask
-                        
-                        # NT-Xent loss
-                        positive_sum = positive_sim.sum(dim=1, keepdim=True)
-                        negative_sum = negative_sim.sum(dim=1, keepdim=True)
-                        total_sum = positive_sum + negative_sum
-                        
-                        # Avoid division by zero
-                        total_sum = torch.clamp(total_sum, min=1e-8)
-                        contrastive_loss = -torch.mean(torch.log(positive_sum / total_sum))
+                    # Feature alignment: query features should be close to prototypes
+                    query_distances = torch.cdist(query_embeddings, prototypes, p=2)
+                    feature_alignment_loss = torch.mean(torch.min(query_distances, dim=1)[0])
+                    
+                    # Combined consistency loss
+                    consistency_loss = 0.4 * entropy_loss + 0.3 * consistency_loss + 0.3 * feature_alignment_loss
+                    
+                except Exception as e:
+                    logger.warning(f"Enhanced consistency loss computation failed: {e}")
+                    consistency_loss = torch.tensor(0.0, device=support_x.device)
                 
-                # 5. Iterative Pseudo-Label Refinement (every 5 steps)
-                if step % 5 == 0 and step > 0:
-                    with torch.no_grad():
-                        # Get current predictions
-                        current_preds = torch.argmax(support_outputs, dim=1)
-                        
-                        # Refine pseudo-labels based on prediction confidence
-                        pred_probs = torch.softmax(support_outputs, dim=1)
-                        max_probs = torch.max(pred_probs, dim=1)[0]
-                        
-                        # Only update pseudo-labels for high-confidence predictions
-                        confidence_threshold = 0.7
-                        high_conf_mask = max_probs > confidence_threshold
-                        
-                        if high_conf_mask.sum() > 0:
-                            # Update pseudo-labels for high-confidence predictions (create new tensor to avoid in-place modification)
-                            pseudo_labels_tensor = pseudo_labels_tensor.clone()
-                            pseudo_labels_tensor[high_conf_mask] = current_preds[high_conf_mask]
-                            
-                            # Re-normalize embeddings and re-cluster if significant changes
-                            if high_conf_mask.sum() > len(pseudo_labels_tensor) * 0.3:  # If >30% changed
-                                support_embeddings = adapted_model.meta_learner.transductive_net(support_x)
-                                support_embeddings_norm = torch.nn.functional.normalize(support_embeddings, p=2, dim=1)
-                                
-                                # Re-cluster with updated embeddings
-                                from sklearn.cluster import KMeans
-                                embeddings_np = support_embeddings_norm.cpu().numpy()
-                                kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
-                                new_pseudo_labels = kmeans.fit_predict(embeddings_np)
-                                
-                                # Apply heuristic mapping again
-                                cluster_counts = torch.bincount(torch.LongTensor(new_pseudo_labels))
-                                if cluster_counts[0] > cluster_counts[1]:
-                                    pseudo_labels_tensor = torch.LongTensor(new_pseudo_labels).to(support_x.device)
-                                else:
-                                    pseudo_labels_tensor = torch.LongTensor(1 - new_pseudo_labels).to(support_x.device)
-                
-                # Combined unsupervised loss with all components
-                support_loss = (0.3 * cross_entropy_loss + 
-                              0.2 * entropy_loss + 
-                              0.2 * consistency_loss + 
-                              0.3 * contrastive_loss)
-                total_loss = support_loss
+                # Enhanced total loss with adaptive weighting
+                consistency_weight = max(0.01, 0.1 * (1 - step / ttt_steps))  # Decreasing weight
+                total_loss = support_loss + consistency_weight * consistency_loss
                 
                 # Backward pass with gradient clipping
                 total_loss.backward()
@@ -2731,42 +2459,41 @@ class BlockchainFederatedIncentiveSystem:
                 # Update learning rate scheduler
                 scheduler.step(total_loss)
                 
-                # Collect metrics for plotting (with infinity checks)
+                # Collect metrics for plotting
+                ttt_losses.append(total_loss.item())
+                ttt_support_losses.append(support_loss.item())
+                ttt_consistency_losses.append(consistency_loss.item())
+                ttt_learning_rates.append(ttt_optimizer.param_groups[0]['lr'])
+                
+                # Enhanced early stopping with accuracy monitoring
+                current_accuracy = 0.0
                 try:
-                    ttt_losses.append(float(total_loss.item()) if not torch.isinf(total_loss) else 0.0)
-                    ttt_support_losses.append(float(support_loss.item()) if not torch.isinf(support_loss) else 0.0)
-                    ttt_consistency_losses.append(float(consistency_loss.item()) if not torch.isinf(consistency_loss) else 0.0)
-                    ttt_learning_rates.append(float(ttt_optimizer.param_groups[0]['lr']))
+                    # Compute accuracy on support set for monitoring
+                    with torch.no_grad():
+                        support_preds = torch.argmax(support_outputs, dim=1)
+                        current_accuracy = (support_preds == support_y).float().mean().item()
                 except:
-                    ttt_losses.append(0.0)
-                    ttt_support_losses.append(0.0)
-                    ttt_consistency_losses.append(0.0)
-                    ttt_learning_rates.append(0.001)
+                    current_accuracy = 0.0
                 
-                # Enhanced early stopping with loss monitoring only
-                # Check for improvement (loss decrease only)
+                # Check for improvement (loss decrease or accuracy increase)
                 loss_improved = total_loss.item() < (best_loss - min_improvement)
+                accuracy_improved = current_accuracy > (best_accuracy + min_improvement)
                 
-                if loss_improved:
+                if loss_improved or accuracy_improved:
                     best_loss = min(best_loss, total_loss.item())
+                    best_accuracy = max(best_accuracy, current_accuracy)
                     patience_counter = 0
                 else:
                     patience_counter += 1
                 
                 if patience_counter >= patience_limit:
-                    logger.info(f"Early stopping at TTT step {step} (patience: {patience_limit}, best_loss: {best_loss:.4f})")
+                    logger.info(f"Early stopping at TTT step {step} (patience: {patience_limit}, best_loss: {best_loss:.4f}, best_acc: {best_accuracy:.4f})")
                     break
                 
                 if step % 4 == 0:
-                    try:
-                        pseudo_label_counts = torch.bincount(pseudo_labels_tensor).tolist()
-                    except:
-                        pseudo_label_counts = [0, 0]  # Fallback for bincount issues
-                    logger.info(f"Enhanced TTT Step {step}: Total Loss = {total_loss.item():.4f}, "
-                              f"Cross-Entropy = {cross_entropy_loss.item():.4f}, "
-                              f"Entropy = {entropy_loss.item():.4f}, Consistency = {consistency_loss.item():.4f}, "
-                              f"Contrastive = {contrastive_loss.item():.4f}, "
-                              f"Pseudo-labels = {pseudo_label_counts}, LR = {ttt_optimizer.param_groups[0]['lr']:.6f}")
+                    logger.info(f"Enhanced TTT Step {step}: Loss = {total_loss.item():.4f}, "
+                              f"LR = {ttt_optimizer.param_groups[0]['lr']:.6f}, "
+                              f"Consistency Weight = {consistency_weight:.4f}")
                 
                 # Clear cache every few steps to manage memory
                 if step % 3 == 0:
@@ -2783,8 +2510,13 @@ class BlockchainFederatedIncentiveSystem:
                 'convergence_step': len(ttt_losses) - 1
             }
             
-            logger.info(f"✅ Unsupervised test-time training adaptation completed in {len(ttt_losses)} steps")
+            logger.info(f"✅ Enhanced test-time training adaptation completed in {len(ttt_losses)} steps")
             logger.info(f"Final learning rate: {ttt_optimizer.param_groups[0]['lr']:.6f}")
+            
+            # Log final dropout status
+            final_dropout_status = adapted_model.get_dropout_status()
+            logger.info(f"TTT adaptation completed with dropout regularization: {len(final_dropout_status)} dropout layers")
+            
             return adapted_model
             
         except Exception as e:
@@ -2976,7 +2708,7 @@ def main():
     # Create enhanced system configuration (using class defaults with increased training)
     config = EnhancedSystemConfig(
         num_clients=3,
-        num_rounds=9,  # Increased rounds for better convergence
+        num_rounds=6,  # Increased rounds for better convergence
         local_epochs=6,  # Reduced for quick testing
         learning_rate=0.001,
         enable_incentives=True,

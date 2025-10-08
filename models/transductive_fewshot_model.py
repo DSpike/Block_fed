@@ -151,40 +151,40 @@ class TransductiveLearner(nn.Module):
         
         self.sequence_length = sequence_length
         
-        # Multi-scale feature extractors (replacing TCN)
+        # Multi-scale feature extractors (replacing TCN) with increased dropout for TTT overfitting prevention
         self.feature_extractors = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim),
                 nn.ReLU(),
-                nn.Dropout(0.2)
+                nn.Dropout(0.3)  # Increased dropout for TTT overfitting prevention
             ),
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim // 2),
                 nn.ReLU(),
-                nn.Dropout(0.2)
+                nn.Dropout(0.3)  # Increased dropout for TTT overfitting prevention
             ),
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim * 2),
                 nn.ReLU(),
-                nn.Dropout(0.2)
+                nn.Dropout(0.3)  # Increased dropout for TTT overfitting prevention
             )
         ])
         
-        # Feature projection to embedding space
+        # Feature projection to embedding space with increased dropout
         self.feature_projection = nn.Sequential(
             nn.Linear(hidden_dim + hidden_dim // 2 + hidden_dim * 2, embedding_dim),
             nn.ReLU(),
-            nn.Dropout(0.2)
+            nn.Dropout(0.3)  # Increased dropout for TTT overfitting prevention
         )
         
-        # Integrated adaptive network (no separate classifier)
+        # Integrated adaptive network with increased dropout for TTT overfitting prevention
         self.adaptive_net = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),  # Increased dropout for TTT overfitting prevention
             nn.Linear(hidden_dim // 2, embedding_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.3),  # Increased dropout for TTT overfitting prevention
             nn.Linear(embedding_dim // 2, num_classes)  # Direct classification output
         )
         
@@ -732,6 +732,9 @@ class TransductiveFewShotModel(nn.Module):
         self.anomaly_threshold = 0.5
         self.adaptation_threshold = 0.3
         
+        # Dropout regularization for TTT overfitting prevention
+        self.dropout_prob = 0.3
+        
     def forward(self, x):
         return self.meta_learner(x)
     
@@ -740,6 +743,37 @@ class TransductiveFewShotModel(nn.Module):
         Extract embeddings from the model
         """
         return self.meta_learner.get_embeddings(x)
+    
+    def set_ttt_mode(self, training=True):
+        """
+        Set model mode for Test-Time Training
+        
+        Args:
+            training: If True, set to training mode (dropout active)
+                     If False, set to evaluation mode (dropout disabled)
+        """
+        if training:
+            self.train()  # Enable dropout during TTT adaptation
+            logger.info("Model set to training mode for TTT adaptation (dropout active)")
+        else:
+            self.eval()   # Disable dropout during evaluation
+            logger.info("Model set to evaluation mode for predictions (dropout disabled)")
+    
+    def get_dropout_status(self):
+        """
+        Get current dropout status for logging
+        
+        Returns:
+            dict: Status of dropout layers in the model
+        """
+        dropout_status = {}
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Dropout):
+                dropout_status[name] = {
+                    'p': module.p,
+                    'training': module.training
+                }
+        return dropout_status
     
     def compute_confidence(self, embeddings, prototypes, prototype_labels):
         """
