@@ -2633,6 +2633,7 @@ class BlockchainFederatedIncentiveSystem:
                         'zero_day_detection_rate': zero_day_detection_rate,
                         'optimal_threshold': optimal_threshold,
                         'roc_auc': roc_auc,
+                        'roc_curve': {'fpr': fpr.tolist(), 'tpr': tpr.tolist(), 'thresholds': thresholds.tolist()},
                         'confusion_matrix': confusion_matrix_dict,
                         'test_samples': len(y_test_np),
                         'query_samples': len(y_test_combined),
