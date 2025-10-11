@@ -111,12 +111,16 @@ class EnhancedSystemConfig:
     # Data configuration
     data_path: str = "UNSW_NB15_training-set.csv"
     test_path: str = "UNSW_NB15_testing-set.csv"
-    zero_day_attack: str = "Analysis"
+    zero_day_attack: str = "Backdoors"
     
     # Model configuration (restored to best performing)
     input_dim: int = 57  # Use all original features, let multi-scale extractors learn importance
     hidden_dim: int = 128
     embedding_dim: int = 64
+    
+    # Prototype update weights (configurable for different data distributions)
+    support_weight: float = 0.3  # Weight for support set contribution
+    test_weight: float = 0.7     # Weight for test set contribution
     
     # Federated learning configuration (optimized for better performance)
     num_clients: int = 3
@@ -283,7 +287,9 @@ class BlockchainFederatedIncentiveSystem:
                 hidden_dim=self.config.hidden_dim,
                 embedding_dim=self.config.embedding_dim,
                 num_classes=2,  # Binary classification for zero-day detection
-                sequence_length=12
+                sequence_length=12,
+                support_weight=self.config.support_weight,  # Configurable prototype weights
+                test_weight=self.config.test_weight
             ).to(self.device)
             
             # 3. Initialize blockchain and IPFS integration
@@ -1951,18 +1957,10 @@ class BlockchainFederatedIncentiveSystem:
                 
                 for round_data in self.training_history:
                     # Extract real training metrics from round data
-                    if 'client_updates' in round_data:
-                        num_clients = round_data['client_updates']
-                        if isinstance(num_clients, int):
-                            # Extract real loss and accuracy from round data
-                            round_loss = round_data.get('loss', 0.1)  # Use real loss or default
-                            round_accuracy = round_data.get('accuracy', 0.5)  # Use real accuracy or default
-                            epoch_losses.append(round_loss)
-                            epoch_accuracies.append(round_accuracy)
-                        else:
-                            # Handle as list (for future compatibility)
-                            round_losses = []
-                            round_accuracies = []
+                    if 'client_updates' in round_data and round_data['client_updates']:
+                        # Handle as list of client updates
+                        round_losses = []
+                        round_accuracies = []
                         
                         for client_update in round_data['client_updates']:
                             if hasattr(client_update, 'training_loss'):
@@ -1970,10 +1968,25 @@ class BlockchainFederatedIncentiveSystem:
                             if hasattr(client_update, 'validation_accuracy'):
                                 round_accuracies.append(client_update.validation_accuracy)
                         
+                        # Use average of client metrics for this round
                         if round_losses:
                             epoch_losses.append(np.mean(round_losses))
+                        else:
+                            # Fallback to round-level accuracy if available
+                            round_accuracy = round_data.get('accuracy', 0.5)
+                            epoch_losses.append(0.1)  # Default loss
+                            
                         if round_accuracies:
                             epoch_accuracies.append(np.mean(round_accuracies))
+                        else:
+                            # Use round-level accuracy as fallback
+                            round_accuracy = round_data.get('accuracy', 0.5)
+                            epoch_accuracies.append(round_accuracy)
+                    else:
+                        # Fallback for rounds without client updates
+                        round_accuracy = round_data.get('accuracy', 0.5)
+                        epoch_losses.append(0.1)  # Default loss
+                        epoch_accuracies.append(round_accuracy)
                 
                 # If we have real data, use it; otherwise use dummy data
                 if epoch_losses and epoch_accuracies:

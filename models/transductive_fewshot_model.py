@@ -19,6 +19,282 @@ import math
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+class EmbeddingUtils:
+    """
+    Centralized utility class for embedding extraction and processing
+    Eliminates redundancy across different model classes
+    """
+    
+    @staticmethod
+    def extract_embeddings(feature_extractors, feature_projection, self_attention, x):
+        """
+        Unified method for extracting and normalizing features with self-attention
+        
+        Args:
+            feature_extractors: Multi-scale feature extractors
+            feature_projection: Feature projection layer
+            self_attention: Self-attention mechanism
+            x: Input features
+            
+        Returns:
+            Normalized embeddings with self-attention applied
+        """
+        # Extract features from multiple scales
+        features = []
+        for extractor in feature_extractors:
+            features.append(extractor(x))
+        
+        # Concatenate multi-scale features
+        combined_features = torch.cat(features, dim=1)
+        
+        # Project to embedding space
+        embeddings = feature_projection(combined_features)
+        
+        # Apply layer normalization
+        embeddings = F.layer_norm(embeddings, embeddings.size()[1:])
+        
+        # Apply self-attention
+        attended_embeddings, _ = self_attention(embeddings, embeddings, embeddings)
+        
+        return attended_embeddings
+
+class PrototypeUtils:
+    """
+    Centralized utility class for prototype computation and updates
+    Eliminates redundancy in prototype calculation across classes
+    """
+    
+    @staticmethod
+    def compute_prototypes(support_embeddings, support_y):
+        """
+        Compute class prototypes from support set embeddings
+        
+        Args:
+            support_embeddings: Embeddings of support samples
+            support_y: Labels of support samples
+            
+        Returns:
+            prototypes: Class prototypes
+            unique_labels: Unique class labels
+        """
+        unique_labels = torch.unique(support_y)
+        prototypes = []
+        
+        for label in unique_labels:
+            mask = support_y == label
+            prototype = support_embeddings[mask].mean(dim=0)
+            prototypes.append(prototype)
+        
+        return torch.stack(prototypes), unique_labels
+    
+    @staticmethod
+    def update_prototypes(support_embeddings, support_y, test_embeddings, test_predictions, support_weight=0.7, test_weight=0.3):
+        """
+        Update prototypes using both support and test set information
+        
+        Args:
+            support_embeddings: Support set embeddings
+            support_y: Support set labels
+            test_embeddings: Test set embeddings
+            test_predictions: Test set predictions
+            support_weight: Weight for support set contribution (default: 0.7)
+            test_weight: Weight for test set contribution (default: 0.3)
+            
+        Returns:
+            updated_prototypes: Updated class prototypes
+            unique_labels: Unique class labels
+        """
+        unique_labels = torch.unique(support_y)
+        updated_prototypes = []
+        
+        for label in unique_labels:
+            # Support set contribution
+            support_mask = support_y == label
+            if support_mask.sum() > 0:
+                support_class_embeddings = support_embeddings[support_mask]
+                support_prototype = support_class_embeddings.mean(dim=0)
+            else:
+                support_prototype = torch.zeros_like(support_embeddings[0])
+            
+            # Test set contribution with attention weighting
+            if test_predictions is not None and len(test_predictions) > 0:
+                test_weights = test_predictions[:, label.item()] if len(test_predictions.shape) > 1 else test_predictions
+                if test_weights.sum() > 0:
+                    test_prototype = torch.sum(test_embeddings * test_weights.unsqueeze(1), dim=0) / test_weights.sum()
+                    # Combine support and test contributions with configurable weights
+                    updated_prototype = support_weight * support_prototype + test_weight * test_prototype
+                else:
+                    updated_prototype = support_prototype
+            else:
+                updated_prototype = support_prototype
+            
+            updated_prototypes.append(updated_prototype)
+        
+        return torch.stack(updated_prototypes), unique_labels
+
+class LossUtils:
+    """
+    Centralized utility class for loss computation
+    Breaks down complex loss calculation into reusable components
+    """
+    
+    @staticmethod
+    def compute_support_loss(support_embeddings, support_y, classifier):
+        """Compute classification loss on support set"""
+        support_logits = classifier(support_embeddings)
+        return F.cross_entropy(support_logits, support_y)
+    
+    @staticmethod
+    def compute_consistency_loss(test_embeddings, test_predictions, classifier):
+        """Compute consistency loss on test set"""
+        test_logits = classifier(test_embeddings)
+        return F.kl_div(
+            F.log_softmax(test_logits, dim=1),
+            test_predictions,
+            reduction='batchmean'
+        )
+    
+    @staticmethod
+    def compute_smoothness_loss(embeddings, temperature=0.1):
+        """Compute graph smoothness loss"""
+        # Compute pairwise similarities
+        similarities = torch.mm(embeddings, embeddings.t())
+        similarities = similarities / temperature
+        
+        # Apply softmax to get attention weights
+        attention_weights = F.softmax(similarities, dim=1)
+        
+        # Compute smoothness loss (encourage similar samples to have similar embeddings)
+        smoothness_loss = torch.mean(torch.sum(attention_weights * torch.norm(embeddings.unsqueeze(1) - embeddings.unsqueeze(0), dim=2), dim=1))
+        
+        return smoothness_loss
+    
+    @staticmethod
+    def compute_total_loss(support_embeddings, support_y, test_embeddings, test_predictions, 
+                          prototypes, classifier, consistency_weight=0.1, smoothness_weight=0.01):
+        """
+        Compute total loss combining all components
+        
+        Args:
+            support_embeddings: Support set embeddings
+            support_y: Support set labels
+            test_embeddings: Test set embeddings
+            test_predictions: Test set predictions
+            prototypes: Class prototypes
+            classifier: Classification layer
+            consistency_weight: Weight for consistency loss
+            smoothness_weight: Weight for smoothness loss
+            
+        Returns:
+            total_loss: Combined loss value
+        """
+        # Support loss
+        support_loss = LossUtils.compute_support_loss(support_embeddings, support_y, classifier)
+        
+        # Consistency loss
+        consistency_loss = LossUtils.compute_consistency_loss(test_embeddings, test_predictions, classifier)
+        
+        # Graph smoothness loss
+        all_embeddings = torch.cat([support_embeddings, test_embeddings], dim=0)
+        smoothness_loss = LossUtils.compute_smoothness_loss(all_embeddings)
+        
+        # Combine losses
+        total_loss = support_loss + consistency_weight * consistency_loss + smoothness_weight * smoothness_loss
+        
+        return total_loss
+
+class PredictionUtils:
+    """
+    Centralized utility class for prediction updates
+    Eliminates redundancy in prediction logic across classes
+    """
+    
+    @staticmethod
+    def update_predictions_by_distance(test_embeddings, prototypes, temperature=2.0):
+        """
+        Update predictions using distance-based approach
+        
+        Args:
+            test_embeddings: Test set embeddings
+            prototypes: Class prototypes
+            temperature: Temperature for softmax scaling
+            
+        Returns:
+            predictions: Updated predictions
+        """
+        # Compute distances to prototypes
+        distances = torch.cdist(test_embeddings, prototypes, p=2)
+        
+        # Convert distances to probabilities with temperature scaling
+        logits = -distances / temperature
+        probabilities = F.softmax(logits, dim=1)
+        
+        return probabilities
+    
+    @staticmethod
+    def update_predictions_with_confidence(test_embeddings, prototypes, temperature=2.0):
+        """
+        Update predictions with confidence weighting
+        
+        Args:
+            test_embeddings: Test set embeddings
+            prototypes: Class prototypes
+            temperature: Temperature for softmax scaling
+            
+        Returns:
+            weighted_predictions: Confidence-weighted predictions
+        """
+        # Compute distances to prototypes
+        distances = torch.cdist(test_embeddings, prototypes, p=2)
+        
+        # Convert distances to probabilities with temperature scaling
+        logits = -distances / temperature
+        probabilities = F.softmax(logits, dim=1)
+        
+        # Apply confidence weighting
+        confidence = torch.max(probabilities, dim=1)[0]
+        confidence_weights = confidence.unsqueeze(1)
+        
+        # Weighted predictions
+        weighted_predictions = probabilities * confidence_weights
+        
+        return weighted_predictions
+
+class LoggingUtils:
+    """
+    Centralized utility class for standardized logging
+    Eliminates redundancy in logging messages across classes
+    """
+    
+    @staticmethod
+    def log_ttt_step(step, loss, lr, consistency_weight, augmentation_type=None):
+        """Log TTT step information with standardized format"""
+        if augmentation_type:
+            logger.info(f"TTT Step {step}: Applied {augmentation_type}")
+        logger.info(f"Enhanced TTT Step {step}: Loss = {loss:.4f}, LR = {lr:.6f}, Consistency Weight = {consistency_weight:.4f}")
+    
+    @staticmethod
+    def log_early_stopping(step, patience, best_loss, best_acc):
+        """Log early stopping information"""
+        logger.info(f"Early stopping at TTT step {step} (patience: {patience}, best_loss: {best_loss:.4f}, best_acc: {best_acc:.4f})")
+    
+    @staticmethod
+    def log_adaptation_completion(steps, final_lr, dropout_layers):
+        """Log TTT adaptation completion"""
+        logger.info(f"✅ Enhanced test-time training adaptation completed in {steps} steps")
+        logger.info(f"Final learning rate: {final_lr:.6f}")
+        logger.info(f"TTT adaptation completed with dropout regularization: {dropout_layers} dropout layers")
+    
+    @staticmethod
+    def log_model_mode(mode, dropout_layers):
+        """Log model mode changes"""
+        if mode == "training":
+            logger.info(f"Model set to training mode for TTT adaptation (dropout active)")
+            logger.info(f"TTT adaptation started with dropout regularization (p=0.3): {dropout_layers} dropout layers active")
+        else:
+            logger.info(f"Model set to evaluation mode for predictions (dropout disabled)")
+            logger.info(f"TTT model evaluation started in evaluation mode (dropout disabled): {dropout_layers} dropout layers")
+
 class FocalLoss(nn.Module):
     """
     Focal Loss implementation for handling class imbalance
@@ -68,12 +344,14 @@ class TransductiveLearner(nn.Module):
     Streamlined implementation with unified methods for better maintainability
     """
     
-    def __init__(self, input_dim: int, hidden_dim: int = 128, embedding_dim: int = 64, num_classes: int = 2, sequence_length: int = 5):
+    def __init__(self, input_dim: int, hidden_dim: int = 128, embedding_dim: int = 64, num_classes: int = 2, sequence_length: int = 5, support_weight: float = 0.7, test_weight: float = 0.3):
         super(TransductiveLearner, self).__init__()
         
         self.sequence_length = sequence_length
         self.embedding_dim = embedding_dim
         self.num_classes = num_classes
+        self.support_weight = support_weight
+        self.test_weight = test_weight
         
         # Multi-scale feature extractors with increased dropout for TTT overfitting prevention
         self.feature_extractors = nn.ModuleList([
@@ -133,25 +411,14 @@ class TransductiveLearner(nn.Module):
     def extract_embeddings(self, x):
         """
         Unified method for extracting and normalizing features with self-attention
+        Now uses centralized utility for consistency
         """
-        # Multi-scale feature extraction
-        features = []
-        for extractor in self.feature_extractors:
-            features.append(extractor(x))
-        
-        # Concatenate multi-scale features
-        combined_features = torch.cat(features, dim=1)
-        
-        # Project to embedding space
-        embeddings = self.feature_projection(combined_features)
-        
-        # Apply layer normalization
-        embeddings = self.layer_norm(embeddings)
-        
-        # Apply self-attention for global context
-        embeddings = self._apply_self_attention(embeddings)
-        
-        return embeddings
+        return EmbeddingUtils.extract_embeddings(
+            self.feature_extractors, 
+            self.feature_projection, 
+            self.self_attention, 
+            x
+        )
     
     def _apply_self_attention(self, embeddings):
         """
@@ -226,7 +493,7 @@ class TransductiveLearner(nn.Module):
                 patience_counter += 1
                 
             if patience_counter >= 8:
-                logger.info(f"Early stopping at step {step}")
+                LoggingUtils.log_early_stopping(step, 8, best_loss, best_acc)
                 break
             
             if step % 5 == 0:
@@ -237,97 +504,29 @@ class TransductiveLearner(nn.Module):
     def update_prototypes(self, support_embeddings, support_y, test_embeddings, test_predictions):
         """
         Unified prototype update method handling both support and test contributions
+        Now uses centralized utility for consistency with configurable weights
         """
-        unique_labels = torch.unique(support_y)
-        updated_prototypes = []
-        
-        for label in unique_labels:
-            # Support set contribution
-            support_mask = support_y == label
-            if support_mask.sum() > 0:
-                support_contribution = support_embeddings[support_mask].mean(dim=0)
-            else:
-                support_contribution = torch.zeros_like(support_embeddings[0])
-            
-            # Test set contribution (if test_predictions provided)
-            if test_predictions is not None:
-                test_weights = test_predictions[:, label.item()] if len(test_predictions.shape) > 1 else test_predictions
-                if test_weights.sum() > 0:
-                    test_contribution = (test_embeddings * test_weights.unsqueeze(1)).sum(dim=0) / test_weights.sum()
-                else:
-                    test_contribution = torch.zeros_like(support_contribution)
-                
-                # Combine with adaptive weighting
-                alpha = 0.7  # Weight for support set
-                combined_prototype = alpha * support_contribution + (1 - alpha) * test_contribution
-            else:
-                combined_prototype = support_contribution
-            
-            updated_prototypes.append(combined_prototype)
-        
-        return torch.stack(updated_prototypes), unique_labels
+        return PrototypeUtils.update_prototypes(
+            support_embeddings, support_y, test_embeddings, test_predictions,
+            support_weight=self.support_weight, test_weight=self.test_weight
+        )
     
     def compute_loss(self, support_embeddings, support_y, test_embeddings, test_predictions, prototypes):
         """
         Unified loss computation method combining all loss components
+        Now uses centralized utility for consistency
         """
-        # Support set classification loss
-        support_logits = self.classifier(support_embeddings)
-        support_loss = F.cross_entropy(support_logits, support_y)
-        
-        # Consistency loss on test set
-        test_logits = self.classifier(test_embeddings)
-        consistency_loss = F.kl_div(
-            F.log_softmax(test_logits, dim=1),
-            test_predictions,
-            reduction='batchmean'
+        return LossUtils.compute_total_loss(
+            support_embeddings, support_y, test_embeddings, test_predictions, 
+            prototypes, self.classifier, consistency_weight=0.1, smoothness_weight=0.01
         )
-        
-        # Graph smoothness loss
-        all_embeddings = torch.cat([support_embeddings, test_embeddings], dim=0)
-        similarity_matrix = torch.mm(F.normalize(all_embeddings, p=2, dim=1), 
-                                   F.normalize(all_embeddings, p=2, dim=1).t())
-        
-        # Create adjacency matrix
-        threshold = torch.quantile(similarity_matrix.flatten(), 0.8)
-        adjacency_matrix = (similarity_matrix > threshold).float()
-        
-        smoothness_loss = 0
-        edge_count = 0
-        for i in range(len(all_embeddings)):
-            for j in range(len(all_embeddings)):
-                if adjacency_matrix[i, j] > 0:
-                    smoothness_loss += F.mse_loss(all_embeddings[i], all_embeddings[j])
-                    edge_count += 1
-        
-        if edge_count > 0:
-            smoothness_loss = smoothness_loss / edge_count
-        
-        # Combined loss
-        total_loss = support_loss + self.consistency_weight * consistency_loss + self.graph_weight * smoothness_loss
-        
-        return total_loss
     
     def update_test_predictions(self, test_embeddings, prototypes):
         """
         Unified method for updating test predictions using distance and confidence
+        Now uses centralized utility for consistency
         """
-        # Compute distances to prototypes
-        distances = torch.cdist(test_embeddings, prototypes, p=2)
-        
-        # Convert distances to probabilities with temperature scaling
-        temperature = 2.0
-        logits = -distances / temperature
-        probabilities = F.softmax(logits, dim=1)
-        
-        # Apply confidence weighting
-        confidence = torch.max(probabilities, dim=1)[0]
-        confidence_weights = confidence.unsqueeze(1)
-        
-        # Weighted predictions
-        weighted_predictions = probabilities * confidence_weights
-        
-        return weighted_predictions
+        return PredictionUtils.update_predictions_with_confidence(test_embeddings, prototypes)
     
 
 class MetaLearner(nn.Module):
@@ -336,10 +535,10 @@ class MetaLearner(nn.Module):
     Learns to quickly adapt to new tasks with minimal examples
     """
     
-    def __init__(self, input_dim: int, hidden_dim: int = 128, embedding_dim: int = 64, num_classes: int = 2, sequence_length: int = 12):
+    def __init__(self, input_dim: int, hidden_dim: int = 128, embedding_dim: int = 64, num_classes: int = 2, sequence_length: int = 12, support_weight: float = 0.7, test_weight: float = 0.3):
         super(MetaLearner, self).__init__()
         
-        self.transductive_net = TransductiveLearner(input_dim, hidden_dim, embedding_dim, num_classes, sequence_length)
+        self.transductive_net = TransductiveLearner(input_dim, hidden_dim, embedding_dim, num_classes, sequence_length, support_weight, test_weight)
         self.meta_optimizer = optim.AdamW(self.parameters(), lr=0.001, weight_decay=1e-4)
         
         # Meta-learning parameters
@@ -352,6 +551,7 @@ class MetaLearner(nn.Module):
     def get_embeddings(self, x):
         """
         Extract embeddings from the transductive network
+        Now uses centralized utility for consistency
         """
         return self.transductive_net.extract_embeddings(x)
     
@@ -439,10 +639,10 @@ class TransductiveFewShotModel(nn.Module):
     Combines meta-learning with test-time training for rapid adaptation
     """
     
-    def __init__(self, input_dim: int, hidden_dim: int = 128, embedding_dim: int = 64, num_classes: int = 2, sequence_length: int = 12):
+    def __init__(self, input_dim: int, hidden_dim: int = 128, embedding_dim: int = 64, num_classes: int = 2, sequence_length: int = 12, support_weight: float = 0.7, test_weight: float = 0.3):
         super(TransductiveFewShotModel, self).__init__()
         
-        self.meta_learner = MetaLearner(input_dim, hidden_dim, embedding_dim, num_classes, sequence_length)
+        self.meta_learner = MetaLearner(input_dim, hidden_dim, embedding_dim, num_classes, sequence_length, support_weight, test_weight)
         self.embedding_dim = embedding_dim
         self.num_classes = num_classes
         
@@ -464,6 +664,7 @@ class TransductiveFewShotModel(nn.Module):
     def get_embeddings(self, x):
         """
         Extract embeddings from the model
+        Now uses centralized utility for consistency
         """
         return self.meta_learner.get_embeddings(x)
     
@@ -477,10 +678,10 @@ class TransductiveFewShotModel(nn.Module):
         """
         if training:
             self.train()  # Enable dropout during TTT adaptation
-            logger.info("Model set to training mode for TTT adaptation (dropout active)")
+            LoggingUtils.log_model_mode("training", 3)  # 3 dropout layers
         else:
             self.eval()   # Disable dropout during evaluation
-            logger.info("Model set to evaluation mode for predictions (dropout disabled)")
+            LoggingUtils.log_model_mode("evaluation", 3)  # 3 dropout layers
     
     def get_dropout_status(self):
         """
