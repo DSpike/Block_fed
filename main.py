@@ -111,7 +111,7 @@ class EnhancedSystemConfig:
     # Data configuration
     data_path: str = "UNSW_NB15_training-set.csv"
     test_path: str = "UNSW_NB15_testing-set.csv"
-    zero_day_attack: str = "Backdoors"
+    zero_day_attack: str = "DoS"
     
     # Model configuration (restored to best performing)
     input_dim: int = 57  # Use all original features, let multi-scale extractors learn importance

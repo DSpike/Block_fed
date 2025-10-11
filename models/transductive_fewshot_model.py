@@ -14,10 +14,306 @@ import logging
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score
 import copy
 import math
+import random
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+class ThresholdAgent:
+    """
+    Reinforcement Learning agent for learning optimal TTT threshold
+    Uses a simple neural network to map state to threshold value
+    """
+    
+    def __init__(self, state_dim=2, hidden_dim=32, learning_rate=0.001):
+        self.state_dim = state_dim
+        self.hidden_dim = hidden_dim
+        self.learning_rate = learning_rate
+        
+        # Simple neural network for threshold prediction
+        self.network = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()  # Output between 0 and 1
+        )
+        
+        self.optimizer = optim.Adam(self.network.parameters(), lr=learning_rate)
+        self.memory = []  # Store (state, action, reward) tuples
+        self.epsilon = 0.1  # Exploration rate
+        self.epsilon_decay = 0.995
+        self.epsilon_min = 0.01
+        
+        # Track performance for reward calculation
+        self.adaptation_history = []
+        self.threshold_history = []
+        
+    def get_threshold(self, state):
+        """
+        Get threshold based on current state using RL agent
+        
+        Args:
+            state: torch.Tensor of shape [2] containing [mean_confidence, adaptation_success_rate]
+            
+        Returns:
+            threshold: float between 0 and 1
+        """
+        with torch.no_grad():
+            if random.random() < self.epsilon:
+                # Exploration: random threshold
+                threshold = random.uniform(0.1, 0.9)
+            else:
+                # Exploitation: use neural network
+                threshold = self.network(state.unsqueeze(0)).item()
+                # Ensure threshold is in reasonable range
+                threshold = max(0.1, min(0.9, threshold))
+        
+        self.threshold_history.append(threshold)
+        return threshold
+    
+    def update(self, state, threshold, adaptation_success_rate, accuracy_improvement, 
+               false_positives=0, false_negatives=0, true_positives=0, true_negatives=0,
+               precision=0.0, recall=0.0, f1_score=0.0, samples_selected=0, total_samples=0):
+        """
+        Update the agent based on adaptation results with enhanced metrics
+        
+        Args:
+            state: Current state [mean_confidence, adaptation_success_rate]
+            threshold: Threshold used
+            adaptation_success_rate: Success rate of adaptation
+            accuracy_improvement: Improvement in accuracy after TTT
+            false_positives: Number of false positive predictions
+            false_negatives: Number of false negative predictions
+            true_positives: Number of true positive predictions
+            true_negatives: Number of true negative predictions
+            precision: Precision score
+            recall: Recall score
+            f1_score: F1 score
+            samples_selected: Number of samples selected for TTT
+            total_samples: Total number of samples available
+        """
+        # Calculate reward based on comprehensive metrics
+        reward = self._calculate_reward(
+            adaptation_success_rate, accuracy_improvement, 
+            false_positives, false_negatives, true_positives, true_negatives,
+            precision, recall, f1_score, samples_selected, total_samples, threshold
+        )
+        
+        # Store experience
+        self.memory.append((state, threshold, reward))
+        
+        # Update adaptation history
+        self.adaptation_history.append(adaptation_success_rate)
+        
+        # Decay exploration rate
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+        
+        # Train the network if we have enough experiences
+        if len(self.memory) >= 10:
+            self._train_network()
+    
+    def _calculate_reward(self, adaptation_success_rate, accuracy_improvement, 
+                         false_positives=0, false_negatives=0, true_positives=0, true_negatives=0,
+                         precision=0.0, recall=0.0, f1_score=0.0, samples_selected=0, total_samples=0, threshold=0.5):
+        """
+        Calculate comprehensive reward based on multiple performance metrics
+        
+        Args:
+            adaptation_success_rate: Rate of successful adaptations
+            accuracy_improvement: Improvement in accuracy
+            false_positives: Number of false positive predictions
+            false_negatives: Number of false negative predictions
+            true_positives: Number of true positive predictions
+            true_negatives: Number of true negative predictions
+            precision: Precision score
+            recall: Recall score
+            f1_score: F1 score
+            samples_selected: Number of samples selected for TTT
+            total_samples: Total number of samples available
+            threshold: Threshold value used
+            
+        Returns:
+            reward: float reward value
+        """
+        # Base reward from adaptation success
+        base_reward = adaptation_success_rate * 10.0
+        
+        # Accuracy improvement bonus
+        accuracy_bonus = accuracy_improvement * 20.0
+        
+        # Precision and recall rewards (weighted by importance)
+        precision_reward = precision * 15.0
+        recall_reward = recall * 15.0
+        f1_reward = f1_score * 25.0
+        
+        # False positive penalty (more severe for security applications)
+        fp_penalty = false_positives * 2.0
+        
+        # False negative penalty (critical for attack detection)
+        fn_penalty = false_negatives * 3.0
+        
+        # True positive bonus (rewarding correct attack detection)
+        tp_bonus = true_positives * 0.5
+        
+        # True negative bonus (rewarding correct normal detection)
+        tn_bonus = true_negatives * 0.3
+        
+        # Sample selection efficiency reward/penalty
+        if total_samples > 0:
+            selection_ratio = samples_selected / total_samples
+            # Optimal selection ratio is between 0.1 and 0.4
+            if 0.1 <= selection_ratio <= 0.4:
+                selection_efficiency = 5.0  # Bonus for good selection ratio
+            elif selection_ratio < 0.05:  # Too few samples selected
+                selection_efficiency = -10.0  # Penalty for under-selection
+            elif selection_ratio > 0.6:  # Too many samples selected
+                selection_efficiency = -5.0  # Penalty for over-selection
+            else:
+                selection_efficiency = 0.0  # Neutral for moderate ratios
+        else:
+            selection_efficiency = 0.0
+        
+        # Threshold stability reward (prefer thresholds in reasonable range)
+        if 0.2 <= threshold <= 0.8:
+            threshold_stability = 2.0
+        else:
+            threshold_stability = -1.0
+        
+        # Balance reward (encourage balanced precision and recall)
+        if precision > 0 and recall > 0:
+            balance_ratio = min(precision, recall) / max(precision, recall)
+            balance_reward = balance_ratio * 10.0
+        else:
+            balance_reward = 0.0
+        
+        # Calculate total reward
+        total_reward = (base_reward + accuracy_bonus + precision_reward + recall_reward + 
+                       f1_reward + tp_bonus + tn_bonus + selection_efficiency + 
+                       threshold_stability + balance_reward - fp_penalty - fn_penalty)
+        
+        # Normalize reward to prevent extreme values
+        total_reward = max(-50.0, min(50.0, total_reward))
+        
+        return total_reward
+    
+    def get_reward_breakdown(self, adaptation_success_rate, accuracy_improvement, 
+                            false_positives=0, false_negatives=0, true_positives=0, true_negatives=0,
+                            precision=0.0, recall=0.0, f1_score=0.0, samples_selected=0, total_samples=0, threshold=0.5):
+        """
+        Get detailed breakdown of reward components for debugging
+        
+        Returns:
+            dict: Detailed breakdown of all reward components
+        """
+        # Calculate all components
+        base_reward = adaptation_success_rate * 10.0
+        accuracy_bonus = accuracy_improvement * 20.0
+        precision_reward = precision * 15.0
+        recall_reward = recall * 15.0
+        f1_reward = f1_score * 25.0
+        fp_penalty = false_positives * 2.0
+        fn_penalty = false_negatives * 3.0
+        tp_bonus = true_positives * 0.5
+        tn_bonus = true_negatives * 0.3
+        
+        # Sample selection efficiency
+        if total_samples > 0:
+            selection_ratio = samples_selected / total_samples
+            if 0.1 <= selection_ratio <= 0.4:
+                selection_efficiency = 5.0
+            elif selection_ratio < 0.05:
+                selection_efficiency = -10.0
+            elif selection_ratio > 0.6:
+                selection_efficiency = -5.0
+            else:
+                selection_efficiency = 0.0
+        else:
+            selection_efficiency = 0.0
+        
+        # Threshold stability
+        if 0.2 <= threshold <= 0.8:
+            threshold_stability = 2.0
+        else:
+            threshold_stability = -1.0
+        
+        # Balance reward
+        if precision > 0 and recall > 0:
+            balance_ratio = min(precision, recall) / max(precision, recall)
+            balance_reward = balance_ratio * 10.0
+        else:
+            balance_reward = 0.0
+        
+        total_reward = (base_reward + accuracy_bonus + precision_reward + recall_reward + 
+                       f1_reward + tp_bonus + tn_bonus + selection_efficiency + 
+                       threshold_stability + balance_reward - fp_penalty - fn_penalty)
+        
+        return {
+            'base_reward': base_reward,
+            'accuracy_bonus': accuracy_bonus,
+            'precision_reward': precision_reward,
+            'recall_reward': recall_reward,
+            'f1_reward': f1_reward,
+            'tp_bonus': tp_bonus,
+            'tn_bonus': tn_bonus,
+            'fp_penalty': -fp_penalty,
+            'fn_penalty': -fn_penalty,
+            'selection_efficiency': selection_efficiency,
+            'threshold_stability': threshold_stability,
+            'balance_reward': balance_reward,
+            'total_reward': total_reward,
+            'selection_ratio': samples_selected / total_samples if total_samples > 0 else 0.0
+        }
+    
+    def _train_network(self):
+        """
+        Train the neural network using stored experiences
+        """
+        if len(self.memory) < 10:
+            return
+        
+        # Sample recent experiences
+        recent_memories = self.memory[-10:]
+        
+        states = torch.stack([mem[0] for mem in recent_memories])
+        thresholds = torch.tensor([mem[1] for mem in recent_memories]).unsqueeze(1)
+        rewards = torch.tensor([mem[2] for mem in recent_memories]).unsqueeze(1)
+        
+        # Normalize rewards
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        
+        # Predict thresholds
+        predicted_thresholds = self.network(states)
+        
+        # Calculate loss (MSE between predicted and actual thresholds, weighted by rewards)
+        loss = F.mse_loss(predicted_thresholds, thresholds, reduction='none')
+        weighted_loss = (loss * (1 + rewards)).mean()
+        
+        # Update network
+        self.optimizer.zero_grad()
+        weighted_loss.backward()
+        self.optimizer.step()
+        
+        # Clear old memories to prevent memory overflow
+        if len(self.memory) > 100:
+            self.memory = self.memory[-50:]
+    
+    def get_adaptation_success_rate(self):
+        """Get current adaptation success rate"""
+        if not self.adaptation_history:
+            return 0.5  # Default value
+        return np.mean(self.adaptation_history[-10:])  # Average of last 10 adaptations
+    
+    def reset(self):
+        """Reset the agent for new training session"""
+        self.memory = []
+        self.adaptation_history = []
+        self.threshold_history = []
+        self.epsilon = 0.1
 
 class EmbeddingUtils:
     """
@@ -259,7 +555,7 @@ class PredictionUtils:
         weighted_predictions = probabilities * confidence_weights
         
         return weighted_predictions
-
+    
 class LoggingUtils:
     """
     Centralized utility class for standardized logging
@@ -353,6 +649,11 @@ class TransductiveLearner(nn.Module):
         self.support_weight = support_weight
         self.test_weight = test_weight
         
+        # RL-based threshold agent for dynamic TTT sample selection
+        self.threshold_agent = ThresholdAgent()
+        self.ttt_threshold = 0.5  # Fallback threshold
+        self.adaptation_success_history = []
+        
         # Multi-scale feature extractors with increased dropout for TTT overfitting prevention
         self.feature_extractors = nn.ModuleList([
             nn.Sequential(
@@ -397,8 +698,100 @@ class TransductiveLearner(nn.Module):
         # Transductive learning parameters
         self.transductive_lr = 0.001
         self.transductive_steps = 25
-        self.graph_weight = 0.3
-        self.consistency_weight = 0.2
+    
+    def get_dynamic_threshold(self, confidence_scores):
+        """
+        Get dynamic threshold using RL agent
+        
+        Args:
+            confidence_scores: torch.Tensor of confidence scores
+            
+        Returns:
+            threshold: float threshold value
+        """
+        # Calculate current state
+        mean_confidence = torch.mean(confidence_scores).item()
+        adaptation_success_rate = self.threshold_agent.get_adaptation_success_rate()
+        
+        # Create state vector
+        state = torch.tensor([mean_confidence, adaptation_success_rate], dtype=torch.float32)
+        
+        # Get threshold from RL agent
+        threshold = self.threshold_agent.get_threshold(state)
+        
+        # Update fallback threshold
+        self.ttt_threshold = threshold
+        
+        return threshold
+    
+    def update_adaptation_success(self, success_rate, accuracy_improvement, 
+                                 initial_predictions=None, adapted_predictions=None, 
+                                 true_labels=None, samples_selected=0, total_samples=0):
+        """
+        Update the RL agent with adaptation results and comprehensive metrics
+        
+        Args:
+            success_rate: float, success rate of the adaptation
+            accuracy_improvement: float, improvement in accuracy
+            initial_predictions: Initial predictions before TTT
+            adapted_predictions: Predictions after TTT adaptation
+            true_labels: True labels for the samples
+            samples_selected: Number of samples selected for TTT
+            total_samples: Total number of samples available
+        """
+        # Calculate current state
+        mean_confidence = 0.5  # Placeholder - would need actual confidence scores
+        adaptation_success_rate = self.threshold_agent.get_adaptation_success_rate()
+        state = torch.tensor([mean_confidence, adaptation_success_rate], dtype=torch.float32)
+        
+        # Calculate comprehensive metrics if predictions are available
+        if initial_predictions is not None and adapted_predictions is not None and true_labels is not None:
+            # Convert to numpy for sklearn metrics
+            if torch.is_tensor(adapted_predictions):
+                adapted_preds = adapted_predictions.cpu().numpy()
+            else:
+                adapted_preds = adapted_predictions
+                
+            if torch.is_tensor(true_labels):
+                true_labels_np = true_labels.cpu().numpy()
+            else:
+                true_labels_np = true_labels
+            
+            # Calculate confusion matrix components
+            tp = ((adapted_preds == 1) & (true_labels_np == 1)).sum()
+            tn = ((adapted_preds == 0) & (true_labels_np == 0)).sum()
+            fp = ((adapted_preds == 1) & (true_labels_np == 0)).sum()
+            fn = ((adapted_preds == 0) & (true_labels_np == 1)).sum()
+            
+            # Calculate precision, recall, and F1
+            if tp + fp > 0:
+                precision = tp / (tp + fp)
+            else:
+                precision = 0.0
+                
+            if tp + fn > 0:
+                recall = tp / (tp + fn)
+            else:
+                recall = 0.0
+                
+            if precision + recall > 0:
+                f1_score = 2 * (precision * recall) / (precision + recall)
+            else:
+                f1_score = 0.0
+        else:
+            # Default values when predictions are not available
+            tp = tn = fp = fn = 0
+            precision = recall = f1_score = 0.0
+        
+        # Update the agent with comprehensive metrics
+        self.threshold_agent.update(
+            state, self.ttt_threshold, success_rate, accuracy_improvement,
+            fp, fn, tp, tn, precision, recall, f1_score, 
+            samples_selected, total_samples
+        )
+        
+        # Store for tracking
+        self.adaptation_success_history.append(success_rate)
         
     def forward(self, x):
         """
@@ -761,9 +1154,14 @@ class TransductiveFewShotModel(nn.Module):
         # Compute confidence scores
         confidence = self.compute_confidence(test_embeddings, prototypes, prototype_labels)
         
+        # Get dynamic threshold using RL agent
+        dynamic_threshold = self.get_dynamic_threshold(confidence)
+        
         # Identify low-confidence samples for test-time training
-        low_confidence_mask = confidence < self.ttt_threshold
+        low_confidence_mask = confidence < dynamic_threshold
         low_confidence_indices = torch.where(low_confidence_mask)[0]
+        
+        logger.info(f"Dynamic TTT threshold: {dynamic_threshold:.4f}, Selected {len(low_confidence_indices)} samples for adaptation")
         
         if len(low_confidence_indices) > 0:
             logger.info(f"Test-time training on {len(low_confidence_indices)} low-confidence samples")
@@ -788,6 +1186,31 @@ class TransductiveFewShotModel(nn.Module):
             adapted_confidence = self.compute_confidence(adapted_embeddings, prototypes, prototype_labels)
             final_confidence = confidence.clone()
             final_confidence[low_confidence_mask] = adapted_confidence
+            
+            # Calculate adaptation success metrics for RL agent
+            if len(low_confidence_indices) > 0:
+                # Calculate accuracy improvement
+                initial_accuracy = (initial_predictions[low_confidence_mask] == y[low_confidence_mask]).float().mean().item()
+                adapted_accuracy = (adapted_predictions == y[low_confidence_mask]).float().mean().item()
+                accuracy_improvement = adapted_accuracy - initial_accuracy
+                
+                # Calculate success rate (how many samples improved)
+                improvement_mask = adapted_confidence > confidence[low_confidence_mask]
+                success_rate = improvement_mask.float().mean().item()
+                
+                # Update RL agent with comprehensive metrics
+                self.update_adaptation_success(
+                    success_rate, accuracy_improvement,
+                    initial_predictions[low_confidence_mask], 
+                    adapted_predictions,
+                    y[low_confidence_mask],
+                    len(low_confidence_indices),
+                    len(y)
+                )
+                
+                # Log comprehensive metrics
+                logger.info(f"TTT Adaptation Success - Rate: {success_rate:.3f}, Accuracy Improvement: {accuracy_improvement:.3f}")
+                logger.info(f"Enhanced RL Metrics - Samples Selected: {len(low_confidence_indices)}/{len(y)} ({len(low_confidence_indices)/len(y)*100:.1f}%)")
         else:
             final_predictions = initial_predictions
             final_confidence = confidence
