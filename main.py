@@ -111,10 +111,10 @@ class EnhancedSystemConfig:
     # Data configuration
     data_path: str = "UNSW_NB15_training-set.csv"
     test_path: str = "UNSW_NB15_testing-set.csv"
-    zero_day_attack: str = "DoS"
+    zero_day_attack: str = "Worms"
     
     # Model configuration (restored to best performing)
-    input_dim: int = 32  # Updated to use selected features (Pearson correlation + 2 additional columns)
+    input_dim: int = 57  # Use all original features, let multi-scale extractors learn importance
     hidden_dim: int = 128
     embedding_dim: int = 64
     
@@ -279,7 +279,7 @@ class BlockchainFederatedIncentiveSystem:
             # 2. Initialize transductive few-shot model
             logger.info("Initializing transductive few-shot model...")
             self.model = TransductiveFewShotModel(
-                input_dim=self.config.input_dim,  # Use config value (57 features)
+                input_dim=self.config.input_dim,  # Use all 57 features, let multi-scale extractors learn importance
                 hidden_dim=self.config.hidden_dim,
                 embedding_dim=self.config.embedding_dim,
                 num_classes=2,  # Binary classification for zero-day detection
@@ -2815,7 +2815,7 @@ class BlockchainFederatedIncentiveSystem:
             zero_day_mask_subset = zero_day_mask[:subset_size]
             
             # Create support and query sets for few-shot learning (enhanced support for better generalization)
-            support_size = min(250, len(X_test_subset) // 2)  # Use 50% as support set for enhanced generalization
+            support_size = min(50, len(X_test_subset) // 2)  # Use 50 samples for few-shot adaptation
             query_size = len(X_test_subset) - support_size
             
             # Log the selected support set size for debugging and monitoring
@@ -3207,14 +3207,14 @@ class BlockchainFederatedIncentiveSystem:
             )
             
             # Adaptive TTT steps based on data complexity with safety limits
-            base_ttt_steps = 50  # Increased from 23 to allow more adaptation
+            base_ttt_steps = 100  # Optimal TTT steps for this dataset
             # Increase steps for more complex data (higher variance in query set)
             query_variance = torch.var(query_x).item()
             complexity_factor = min(2.0, 1.0 + query_variance * 10)  # Scale factor based on variance
             ttt_steps = int(base_ttt_steps * complexity_factor)
             
             # SAFETY MEASURE: Limit maximum TTT steps to prevent infinite loops
-            ttt_steps = min(ttt_steps, 200)  # Increased from 100 to 200
+            ttt_steps = min(ttt_steps, 200)  # Maximum 200 steps with complexity factor
             logger.info(f"Adaptive TTT steps: {ttt_steps} (complexity factor: {complexity_factor:.2f})")
             ttt_losses = []
             ttt_support_losses = []

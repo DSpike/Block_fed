@@ -445,9 +445,9 @@ class UNSWPreprocessor:
         train_df = self.step2_feature_engineering(train_df)
         train_df = self.step3_data_cleaning(train_df)
         train_df = self.step4_categorical_encoding(train_df)
-        # Apply feature selection using Pearson correlation
-        logger.info("Applying Pearson correlation feature selection...")
-        train_df = self.step5_feature_selection(train_df)
+        # Skip feature selection - let multi-scale extractors learn feature importance
+        logger.info("Skipping Pearson correlation feature selection - using all features")
+        # train_df = self.step5_feature_selection(train_df)  # DISABLED
         
         # Process test data
         logger.info("\nProcessing test data...")
@@ -455,9 +455,9 @@ class UNSWPreprocessor:
         test_df = self.step2_feature_engineering(test_df)
         test_df = self.step3_data_cleaning(test_df)
         test_df = self.step4_categorical_encoding(test_df)
-        # Apply feature selection using Pearson correlation
-        logger.info("Applying Pearson correlation feature selection for test data...")
-        test_df = self.step5_feature_selection(test_df)
+        # Skip feature selection - let multi-scale extractors learn feature importance
+        logger.info("Skipping Pearson correlation feature selection for test data - using all features")
+        # test_df = self.step5_feature_selection(test_df)  # DISABLED
         
         # Align features between train and test data
         logger.info("Aligning features between train and test data...")
