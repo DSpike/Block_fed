@@ -62,84 +62,6 @@ class FocalLoss(nn.Module):
         else:
             return focal_loss
 
-class TCNBlock(nn.Module):
-    """
-    Temporal Convolutional Network Block with Residual Connection
-    """
-    
-    def __init__(self, input_dim: int, hidden_dim: int, kernel_size: int = 3, dilation: int = 1, dropout: float = 0.1):
-        super(TCNBlock, self).__init__()
-        
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.kernel_size = kernel_size
-        self.dilation = dilation
-        
-        # Causal padding calculation
-        self.padding = (kernel_size - 1) * dilation
-        
-        # TCN layers
-        self.conv1 = nn.Conv1d(input_dim, hidden_dim, kernel_size, 
-                               dilation=dilation, padding=self.padding)
-        self.conv2 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size, 
-                               dilation=dilation, padding=self.padding)
-        
-        # Normalization and activation
-        self.norm1 = nn.BatchNorm1d(hidden_dim)
-        self.norm2 = nn.BatchNorm1d(hidden_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.activation = nn.ReLU()
-        
-        # Residual connection (1x1 conv if dimensions don't match)
-        self.residual_conv = nn.Conv1d(input_dim, hidden_dim, 1) if input_dim != hidden_dim else None
-        
-    def forward(self, x):
-        """
-        Forward pass of TCN block
-        
-        Args:
-            x: Input tensor of shape (batch_size, input_dim, sequence_length)
-            
-        Returns:
-            Output tensor of shape (batch_size, hidden_dim, sequence_length)
-        """
-        # Store residual
-        residual = x
-        
-        # First conv layer
-        out = self.conv1(x)
-        out = self.norm1(out)
-        out = self.activation(out)
-        out = self.dropout(out)
-        
-        # Second conv layer
-        out = self.conv2(out)
-        out = self.norm2(out)
-        
-        # Apply residual connection
-        if self.residual_conv is not None:
-            residual = self.residual_conv(residual)
-        
-        # Causal padding: remove future information
-        # Only apply padding removal if we have enough sequence length
-        if self.padding > 0 and out.size(-1) > self.padding:
-            out = out[:, :, :-self.padding]
-        
-        # Ensure residual matches output sequence length
-        if residual.size(-1) != out.size(-1):
-            if residual.size(-1) > out.size(-1):
-                residual = residual[:, :, :out.size(-1)]
-            else:
-                # Pad residual to match output length
-                pad_size = out.size(-1) - residual.size(-1)
-                residual = torch.nn.functional.pad(residual, (0, pad_size))
-        
-        # Add residual connection
-        out = out + residual
-        out = self.activation(out)
-        
-        return out
-
 class TransductiveLearner(nn.Module):
     """
     True Transductive Learning for Zero-Day Detection
@@ -151,22 +73,22 @@ class TransductiveLearner(nn.Module):
         
         self.sequence_length = sequence_length
         
-        # Multi-scale feature extractors (replacing TCN) with increased dropout for TTT overfitting prevention
+        # Multi-scale feature extractors with increased dropout for TTT overfitting prevention
         self.feature_extractors = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim),
                 nn.ReLU(),
-                nn.Dropout(0.3)  # Increased dropout for TTT overfitting prevention
+                nn.Dropout(0.5)  # Increased dropout for TTT overfitting prevention
             ),
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim // 2),
                 nn.ReLU(),
-                nn.Dropout(0.3)  # Increased dropout for TTT overfitting prevention
+                nn.Dropout(0.5)  # Increased dropout for TTT overfitting prevention
             ),
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim * 2),
                 nn.ReLU(),
-                nn.Dropout(0.3)  # Increased dropout for TTT overfitting prevention
+                nn.Dropout(0.5)  # Increased dropout for TTT overfitting prevention
             )
         ])
         
@@ -174,17 +96,17 @@ class TransductiveLearner(nn.Module):
         self.feature_projection = nn.Sequential(
             nn.Linear(hidden_dim + hidden_dim // 2 + hidden_dim * 2, embedding_dim),
             nn.ReLU(),
-            nn.Dropout(0.3)  # Increased dropout for TTT overfitting prevention
+            nn.Dropout(0.5)  # Increased dropout for TTT overfitting prevention
         )
         
         # Integrated adaptive network with increased dropout for TTT overfitting prevention
         self.adaptive_net = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.3),  # Increased dropout for TTT overfitting prevention
+            nn.Dropout(0.5),  # Increased dropout for TTT overfitting prevention
             nn.Linear(hidden_dim // 2, embedding_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.3),  # Increased dropout for TTT overfitting prevention
+            nn.Dropout(0.5),  # Increased dropout for TTT overfitting prevention
             nn.Linear(embedding_dim // 2, num_classes)  # Direct classification output
         )
         
@@ -229,28 +151,6 @@ class TransductiveLearner(nn.Module):
         # Direct adaptive classification (no separate embedding step)
         logits = self.adaptive_net(embeddings)
         return logits
-    
-    def _create_sliding_window_sequences(self, x, sequence_length=None):
-        """
-        Create sequences from tabular data using sliding window approach
-        
-        Args:
-            x: Input tensor of shape (batch_size, input_dim)
-            sequence_length: Length of sequences to create
-            
-        Returns:
-            sequences: Tensor of shape (batch_size, input_dim, sequence_length)
-        """
-        if sequence_length is None:
-            sequence_length = self.sequence_length
-            
-        batch_size, input_dim = x.shape
-        
-        # For now, we'll create sequences by repeating the same sample
-        # In a real implementation, you might want to group by time, IP, etc.
-        sequences = x.unsqueeze(-1).repeat(1, 1, sequence_length)
-        
-        return sequences
     
     def get_embeddings(self, x):
         """
@@ -733,7 +633,7 @@ class TransductiveFewShotModel(nn.Module):
         self.adaptation_threshold = 0.3
         
         # Dropout regularization for TTT overfitting prevention
-        self.dropout_prob = 0.3
+        self.dropout_prob = 0.5
         
     def forward(self, x):
         return self.meta_learner(x)

@@ -32,3 +32,4 @@
             'epoch_accuracies': aggregated_accuracies
         }
 
+

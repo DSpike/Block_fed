@@ -17,8 +17,8 @@ def get_available_attack_types():
     print("🔍 Analyzing available attack types in UNSW-NB15 dataset...")
     
     # Load datasets
-    train_df = pd.read_csv("../UNSW_NB15_training-set.csv")
-    test_df = pd.read_csv("../UNSW_NB15_testing-set.csv")
+    train_df = pd.read_csv("UNSW_NB15_training-set.csv")
+    test_df = pd.read_csv("UNSW_NB15_testing-set.csv")
     
     # Get attack types from both datasets
     train_attacks = train_df['attack_cat'].value_counts()

@@ -858,14 +858,20 @@ class PerformanceVisualizer:
         # Create figure with IEEE standard styling
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
         
-        # Extract confusion matrix values
-        tn = confusion_data.get('tn', 0)
-        fp = confusion_data.get('fp', 0)
-        fn = confusion_data.get('fn', 0)
-        tp = confusion_data.get('tp', 0)
-        
-        # Create confusion matrix array
-        cm = np.array([[tn, fp], [fn, tp]])
+        # Handle both dictionary and list formats for confusion matrix
+        if isinstance(confusion_data, dict):
+            # Dictionary format: {'tn': x, 'fp': y, 'fn': z, 'tp': w}
+            tn = confusion_data.get('tn', 0)
+            fp = confusion_data.get('fp', 0)
+            fn = confusion_data.get('fn', 0)
+            tp = confusion_data.get('tp', 0)
+            cm = np.array([[tn, fp], [fn, tp]])
+        elif isinstance(confusion_data, list) and len(confusion_data) == 2:
+            # List format: [[tn, fp], [fn, tp]]
+            cm = np.array(confusion_data)
+        else:
+            logger.warning(f"Unsupported confusion matrix format: {type(confusion_data)}")
+            return ""
         
         # Plot confusion matrix
         im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Greens)

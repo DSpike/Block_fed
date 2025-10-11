@@ -561,6 +561,51 @@ class UNSWPreprocessor:
         self.attack_types = preprocessor_state['attack_types']
         
         logger.info(f"Preprocessor state loaded from {filepath}")
+    
+    def sample_stratified_subset(self, X: torch.Tensor, y: torch.Tensor, n_samples: int, random_state: int = 42) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Sample a stratified subset preserving class distribution
+        
+        Args:
+            X: Input features tensor
+            y: Target labels tensor
+            n_samples: Number of samples to select
+            random_state: Random seed for reproducibility
+            
+        Returns:
+            Tuple of (X_subset, y_subset) with stratified sampling
+        """
+        from sklearn.model_selection import train_test_split
+        
+        # Convert to numpy for sklearn
+        X_np = X.cpu().numpy()
+        y_np = y.cpu().numpy()
+        
+        # Ensure we don't sample more than available
+        n_samples = min(n_samples, len(X_np))
+        
+        # Use stratified sampling to preserve class distribution
+        if n_samples >= len(X_np):
+            # If we want all samples, just return the original data
+            X_subset = X_np
+            y_subset = y_np
+        else:
+            # Use specific number of samples
+            X_subset, _, y_subset, _ = train_test_split(
+                X_np, y_np,
+                train_size=n_samples,
+                stratify=y_np,
+                random_state=random_state
+            )
+        
+        # Convert back to tensors
+        X_subset = torch.FloatTensor(X_subset)
+        y_subset = torch.LongTensor(y_subset)
+        
+        logger.info(f"Sampled {len(X_subset)} stratified samples from {len(X)} total samples")
+        logger.info(f"Class distribution: {np.bincount(y_subset.numpy())}")
+        
+        return X_subset, y_subset
 
 def main():
     """Test the UNSW preprocessor"""
