@@ -111,7 +111,7 @@ class EnhancedSystemConfig:
     # Data configuration
     data_path: str = "UNSW_NB15_training-set.csv"
     test_path: str = "UNSW_NB15_testing-set.csv"
-    zero_day_attack: str = "Worms"
+    zero_day_attack: str = "Analysis"
     
     # Model configuration (restored to best performing)
     input_dim: int = 57  # Use all original features, let multi-scale extractors learn importance
@@ -3139,19 +3139,25 @@ class BlockchainFederatedIncentiveSystem:
                     logger.warning(f"Failed to calculate TTT confusion matrix and ROC: {e}")
             
             # Store TTT adaptation data for visualization
-            self.ttt_adaptation_data = {
-                'task_accuracies': task_metrics['accuracy'],
-                'task_f1_scores': task_metrics['f1_score'],
-                'task_mcc_scores': task_metrics['mcc'],
-                'num_tasks': len(task_metrics['accuracy']),
-                'mean_accuracy': results['accuracy_mean'],
-                'std_accuracy': results['accuracy_std'],
-                'steps': list(range(len(task_metrics['accuracy']))),
-                # Use real loss data from TTT adaptation if available
-                'total_losses': getattr(adapted_model, 'ttt_adaptation_data', {}).get('total_losses', []) if 'adapted_model' in locals() and adapted_model else [],
-                'support_losses': getattr(adapted_model, 'ttt_adaptation_data', {}).get('support_losses', []) if 'adapted_model' in locals() and adapted_model else [],
-                'consistency_losses': getattr(adapted_model, 'ttt_adaptation_data', {}).get('consistency_losses', []) if 'adapted_model' in locals() and adapted_model else []
-            }
+            # Preserve the main TTT adaptation data if it exists, otherwise create meta-task data
+            if hasattr(self, 'ttt_adaptation_data') and self.ttt_adaptation_data and 'total_losses' in self.ttt_adaptation_data:
+                # Keep the main TTT adaptation data (with real steps and losses)
+                logger.info("Preserving main TTT adaptation data for plotting")
+            else:
+                # Fallback to meta-task data if main TTT data not available
+                self.ttt_adaptation_data = {
+                    'task_accuracies': task_metrics['accuracy'],
+                    'task_f1_scores': task_metrics['f1_score'],
+                    'task_mcc_scores': task_metrics['mcc'],
+                    'num_tasks': len(task_metrics['accuracy']),
+                    'mean_accuracy': results['accuracy_mean'],
+                    'std_accuracy': results['accuracy_std'],
+                    'steps': list(range(len(task_metrics['accuracy']))),
+                    # Use real loss data from TTT adaptation if available
+                    'total_losses': getattr(adapted_model, 'ttt_adaptation_data', {}).get('total_losses', []) if 'adapted_model' in locals() and adapted_model else [],
+                    'support_losses': getattr(adapted_model, 'ttt_adaptation_data', {}).get('support_losses', []) if 'adapted_model' in locals() and adapted_model else [],
+                    'consistency_losses': getattr(adapted_model, 'ttt_adaptation_data', {}).get('consistency_losses', []) if 'adapted_model' in locals() and adapted_model else []
+                }
             
             logger.info(f"✅ TTT Model meta-tasks evaluation completed")
             logger.info(f"  Accuracy: {results['accuracy_mean']:.4f} ± {results['accuracy_std']:.4f}")

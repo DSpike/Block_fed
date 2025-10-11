@@ -610,8 +610,8 @@ class BlockchainFederatedClient:
                 support_embeddings = self.model.meta_learner.transductive_net(support_x)
                 
                 # Compute prototypes
-                prototypes, prototype_labels = self.model.meta_learner.transductive_net.compute_prototypes(
-                    support_embeddings, support_y
+                prototypes, prototype_labels = self.model.meta_learner.transductive_net.update_prototypes(
+                    support_embeddings, support_y, support_embeddings, None
                 )
                 
                 # Compute loss (prototype consistency)

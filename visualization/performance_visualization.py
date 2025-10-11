@@ -156,6 +156,20 @@ class PerformanceVisualizer:
         support_losses = ttt_adaptation_data['support_losses']
         consistency_losses = ttt_adaptation_data['consistency_losses']
         
+        # Fix dimension mismatch by ensuring all arrays have the same length
+        min_length = min(len(steps), len(total_losses), len(support_losses), len(consistency_losses))
+        if min_length == 0:
+            logger.warning("No valid TTT adaptation data to plot")
+            return ""
+        
+        # Truncate all arrays to the minimum length
+        steps = steps[:min_length]
+        total_losses = total_losses[:min_length]
+        support_losses = support_losses[:min_length]
+        consistency_losses = consistency_losses[:min_length]
+        
+        logger.info(f"TTT adaptation plot: Using {min_length} data points (steps: {len(ttt_adaptation_data['steps'])}, losses: {len(ttt_adaptation_data['total_losses'])})")
+        
         # Plot 1: Total Loss Evolution
         ax1.plot(steps, total_losses, 'b-', linewidth=2, marker='o', markersize=6, label='Total Loss')
         ax1.set_title('TTT Adaptation: Total Loss Evolution', fontweight='bold', fontfamily='Times New Roman')

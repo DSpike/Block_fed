@@ -64,60 +64,56 @@ class FocalLoss(nn.Module):
 
 class TransductiveLearner(nn.Module):
     """
-    True Transductive Learning for Zero-Day Detection
-    Uses both support set and test set structure for classification
+    Optimized Transductive Learning for Zero-Day Detection
+    Streamlined implementation with unified methods for better maintainability
     """
     
     def __init__(self, input_dim: int, hidden_dim: int = 128, embedding_dim: int = 64, num_classes: int = 2, sequence_length: int = 5):
         super(TransductiveLearner, self).__init__()
         
         self.sequence_length = sequence_length
+        self.embedding_dim = embedding_dim
+        self.num_classes = num_classes
         
         # Multi-scale feature extractors with increased dropout for TTT overfitting prevention
         self.feature_extractors = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim),
                 nn.ReLU(),
-                nn.Dropout(0.5)  # Increased dropout for TTT overfitting prevention
+                nn.Dropout(0.5)
             ),
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim // 2),
                 nn.ReLU(),
-                nn.Dropout(0.5)  # Increased dropout for TTT overfitting prevention
+                nn.Dropout(0.5)
             ),
             nn.Sequential(
                 nn.Linear(input_dim, hidden_dim * 2),
                 nn.ReLU(),
-                nn.Dropout(0.5)  # Increased dropout for TTT overfitting prevention
+                nn.Dropout(0.5)
             )
         ])
         
-        # Feature projection to embedding space with increased dropout
+        # Feature projection to embedding space
         self.feature_projection = nn.Sequential(
             nn.Linear(hidden_dim + hidden_dim // 2 + hidden_dim * 2, embedding_dim),
             nn.ReLU(),
-            nn.Dropout(0.5)  # Increased dropout for TTT overfitting prevention
+            nn.Dropout(0.5)
         )
         
-        # Integrated adaptive network with increased dropout for TTT overfitting prevention
-        self.adaptive_net = nn.Sequential(
+        # Classification network
+        self.classifier = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.5),  # Increased dropout for TTT overfitting prevention
+            nn.Dropout(0.5),
             nn.Linear(hidden_dim // 2, embedding_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.5),  # Increased dropout for TTT overfitting prevention
-            nn.Linear(embedding_dim // 2, num_classes)  # Direct classification output
+            nn.Dropout(0.5),
+            nn.Linear(embedding_dim // 2, num_classes)
         )
         
-        # Transductive components
-        self.embedding_dim = embedding_dim
-        self.num_classes = num_classes
-        self.attention_net = nn.MultiheadAttention(embedding_dim, num_heads=4)
+        # Attention mechanism for global context
         self.self_attention = nn.MultiheadAttention(embedding_dim, num_heads=2)
-        self.graph_conv = nn.Linear(embedding_dim, embedding_dim)
-        
-        # Layer normalization for stability
         self.layer_norm = nn.LayerNorm(embedding_dim)
         
         # Transductive learning parameters
@@ -127,34 +123,16 @@ class TransductiveLearner(nn.Module):
         self.consistency_weight = 0.2
         
     def forward(self, x):
-        # Multi-scale feature extraction
-        features = []
-        for extractor in self.feature_extractors:
-            features.append(extractor(x))
-        
-        # Concatenate multi-scale features
-        combined_features = torch.cat(features, dim=1)
-        
-        # Project to embedding space
-        embeddings = self.feature_projection(combined_features)
-        
-        # Apply layer normalization
-        embeddings = self.layer_norm(embeddings)
-        
-        # Self-attention for global context
-        embeddings_reshaped = embeddings.unsqueeze(1)  # (batch_size, 1, embedding_dim)
-        attended_embeddings, _ = self.self_attention(
-            embeddings_reshaped, embeddings_reshaped, embeddings_reshaped
-        )
-        embeddings = attended_embeddings.squeeze(1) + embeddings  # Residual connection
-        
-        # Direct adaptive classification (no separate embedding step)
-        logits = self.adaptive_net(embeddings)
+        """
+        Forward pass: Extract embeddings and get logits
+        """
+        embeddings = self.extract_embeddings(x)
+        logits = self.classifier(embeddings)
         return logits
     
-    def get_embeddings(self, x):
+    def extract_embeddings(self, x):
         """
-        Extract embeddings (features before final classification layer)
+        Unified method for extracting and normalizing features with self-attention
         """
         # Multi-scale feature extraction
         features = []
@@ -170,74 +148,25 @@ class TransductiveLearner(nn.Module):
         # Apply layer normalization
         embeddings = self.layer_norm(embeddings)
         
-        # Self-attention for global context
-        embeddings_reshaped = embeddings.unsqueeze(1)  # (batch_size, 1, embedding_dim)
-        attended_embeddings, _ = self.self_attention(
-            embeddings_reshaped, embeddings_reshaped, embeddings_reshaped
-        )
-        embeddings = attended_embeddings.squeeze(1) + embeddings  # Residual connection
+        # Apply self-attention for global context
+        embeddings = self._apply_self_attention(embeddings)
         
         return embeddings
     
+    def _apply_self_attention(self, embeddings):
+        """
+        Apply self-attention with residual connection
+        """
+        embeddings_reshaped = embeddings.unsqueeze(1)  # (batch_size, 1, embedding_dim)
+        attended_embeddings, _ = self.self_attention(
+            embeddings_reshaped, embeddings_reshaped, embeddings_reshaped
+        )
+        return attended_embeddings.squeeze(1) + embeddings  # Residual connection
     
-    def compute_similarity_graph(self, embeddings):
-        """
-        Compute similarity graph between test samples
-        """
-        # Compute pairwise similarities
-        similarities = torch.mm(embeddings, embeddings.t())
-        
-        # Apply softmax to get attention weights
-        attention_weights = F.softmax(similarities, dim=1)
-        
-        return attention_weights
-    
-    def compute_prototypes(self, support_embeddings, support_labels):
-        """
-        Compute class prototypes from support set
-        
-        Args:
-            support_embeddings: Embeddings of support samples
-            support_labels: Labels of support samples
-            
-        Returns:
-            prototypes: Class prototypes
-            unique_labels: Unique class labels
-        """
-        unique_labels = torch.unique(support_labels)
-        prototypes = []
-        
-        for label in unique_labels:
-            mask = support_labels == label
-            prototype = support_embeddings[mask].mean(dim=0)
-            prototypes.append(prototype)
-        
-        return torch.stack(prototypes), unique_labels
-    
-    def classify(self, query_embeddings, prototypes, prototype_labels):
-        """
-        Classify query samples based on distance to prototypes
-        
-        Args:
-            query_embeddings: Embeddings of query samples
-            prototypes: Class prototypes
-            prototype_labels: Labels of prototypes
-            
-        Returns:
-            predictions: Predicted labels
-            distances: Distances to prototypes
-        """
-        # Compute distances to all prototypes
-        distances = torch.cdist(query_embeddings, prototypes, p=2)
-        
-        # Predict based on minimum distance
-        predictions = prototype_labels[torch.argmin(distances, dim=1)]
-        
-        return predictions, distances
     
     def transductive_optimization(self, support_x, support_y, test_x, test_y=None):
         """
-        True transductive learning optimization
+        Main transductive optimization method
         """
         device = next(self.parameters()).device
         
@@ -246,45 +175,36 @@ class TransductiveLearner(nn.Module):
         support_y = support_y.to(device)
         test_x = test_x.to(device)
         
-        # Get embeddings (before final classification layer)
-        support_embeddings = self.get_embeddings(support_x)
-        test_embeddings = self.get_embeddings(test_x)
+        # Compute support and test embeddings
+        support_embeddings = self.extract_embeddings(support_x)
+        test_embeddings = self.extract_embeddings(test_x)
         
-        # Compute prototypes from support set
-        unique_labels = torch.unique(support_y)
-        prototypes = []
-        for label in unique_labels:
-            mask = support_y == label
-            prototype = support_embeddings[mask].mean(dim=0)
-            prototypes.append(prototype)
-        prototypes = torch.stack(prototypes)
+        # Compute prototypes
+        prototypes, unique_labels = self.update_prototypes(support_embeddings, support_y, test_embeddings, None)
         
-        # Initialize test predictions (soft labels)
-        test_predictions = self.initialize_test_predictions(test_embeddings, prototypes, unique_labels)
+        # Initialize test predictions
+        test_predictions = self.update_test_predictions(test_embeddings, prototypes)
         
-        # Enhanced transductive optimization with adaptive learning
+        # Setup optimizer and scheduler
         optimizer = optim.AdamW(self.parameters(), lr=self.transductive_lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.8, patience=5)
         
         best_loss = float('inf')
         patience_counter = 0
         
+        # Transductive optimization loop
         for step in range(self.transductive_steps):
             optimizer.zero_grad()
             
             # Recompute embeddings (they change during optimization)
-            support_embeddings = self.embedding_net(support_x)
-            test_embeddings = self.embedding_net(test_x)
+            support_embeddings = self.extract_embeddings(support_x)
+            test_embeddings = self.extract_embeddings(test_x)
             
-            # Update prototypes with attention weighting
-            prototypes = self.update_prototypes_with_attention(support_embeddings, support_y, test_embeddings, test_predictions)
+            # Update prototypes
+            prototypes = self.update_prototypes(support_embeddings, support_y, test_embeddings, test_predictions)
             
-            # Compute enhanced transductive loss
-            total_loss = self.compute_enhanced_transductive_loss(
-                support_embeddings, support_y,
-                test_embeddings, test_predictions,
-                prototypes, unique_labels
-            )
+            # Compute total loss
+            total_loss = self.compute_loss(support_embeddings, support_y, test_embeddings, test_predictions, prototypes)
             
             # Backward pass
             total_loss.backward()
@@ -295,28 +215,28 @@ class TransductiveLearner(nn.Module):
             optimizer.step()
             scheduler.step(total_loss)
             
-            # Update test predictions with confidence weighting
-            test_predictions = self.update_test_predictions_with_confidence(test_embeddings, prototypes, unique_labels)
+            # Update test predictions
+            test_predictions = self.update_test_predictions(test_embeddings, prototypes)
             
-            # Early stopping based on loss improvement
+            # Early stopping
             if total_loss.item() < best_loss:
                 best_loss = total_loss.item()
                 patience_counter = 0
             else:
                 patience_counter += 1
                 
-            if patience_counter >= 8:  # Early stopping
+            if patience_counter >= 8:
                 logger.info(f"Early stopping at step {step}")
                 break
             
             if step % 5 == 0:
-                logger.info(f"Enhanced transductive step {step}: Loss = {total_loss.item():.4f}, LR = {optimizer.param_groups[0]['lr']:.6f}")
+                logger.info(f"Transductive step {step}: Loss = {total_loss.item():.4f}, LR = {optimizer.param_groups[0]['lr']:.6f}")
         
         return test_predictions, prototypes, unique_labels
     
-    def update_prototypes_with_attention(self, support_embeddings, support_y, test_embeddings, test_predictions):
+    def update_prototypes(self, support_embeddings, support_y, test_embeddings, test_predictions):
         """
-        Update prototypes using attention weighting from both support and test sets
+        Unified prototype update method handling both support and test contributions
         """
         unique_labels = torch.unique(support_y)
         updated_prototypes = []
@@ -325,35 +245,38 @@ class TransductiveLearner(nn.Module):
             # Support set contribution
             support_mask = support_y == label
             if support_mask.sum() > 0:
-                support_class_embeddings = support_embeddings[support_mask]
-                support_prototype = support_class_embeddings.mean(dim=0)
+                support_contribution = support_embeddings[support_mask].mean(dim=0)
             else:
-                support_prototype = torch.zeros_like(support_embeddings[0])
+                support_contribution = torch.zeros_like(support_embeddings[0])
             
-            # Test set contribution with attention weighting
-            test_weights = test_predictions[:, label.item()] if len(test_predictions.shape) > 1 else test_predictions
-            if test_weights.sum() > 0:
-                test_prototype = torch.sum(test_embeddings * test_weights.unsqueeze(1), dim=0) / test_weights.sum()
+            # Test set contribution (if test_predictions provided)
+            if test_predictions is not None:
+                test_weights = test_predictions[:, label.item()] if len(test_predictions.shape) > 1 else test_predictions
+                if test_weights.sum() > 0:
+                    test_contribution = (test_embeddings * test_weights.unsqueeze(1)).sum(dim=0) / test_weights.sum()
+                else:
+                    test_contribution = torch.zeros_like(support_contribution)
+                
+                # Combine with adaptive weighting
+                alpha = 0.7  # Weight for support set
+                combined_prototype = alpha * support_contribution + (1 - alpha) * test_contribution
             else:
-                test_prototype = torch.zeros_like(support_embeddings[0])
+                combined_prototype = support_contribution
             
-            # Combine with adaptive weighting
-            alpha = 0.7  # Weight for support set
-            combined_prototype = alpha * support_prototype + (1 - alpha) * test_prototype
             updated_prototypes.append(combined_prototype)
         
-        return torch.stack(updated_prototypes)
+        return torch.stack(updated_prototypes), unique_labels
     
-    def compute_enhanced_transductive_loss(self, support_embeddings, support_y, test_embeddings, test_predictions, prototypes, unique_labels):
+    def compute_loss(self, support_embeddings, support_y, test_embeddings, test_predictions, prototypes):
         """
-        Compute enhanced transductive loss with multiple components
+        Unified loss computation method combining all loss components
         """
-        # Classification loss on support set (using adaptive network)
-        support_logits = self.adaptive_net(support_embeddings)
+        # Support set classification loss
+        support_logits = self.classifier(support_embeddings)
         support_loss = F.cross_entropy(support_logits, support_y)
         
-        # Consistency loss on test set (using adaptive network)
-        test_logits = self.adaptive_net(test_embeddings)
+        # Consistency loss on test set
+        test_logits = self.classifier(test_embeddings)
         consistency_loss = F.kl_div(
             F.log_softmax(test_logits, dim=1),
             test_predictions,
@@ -385,15 +308,15 @@ class TransductiveLearner(nn.Module):
         
         return total_loss
     
-    def update_test_predictions_with_confidence(self, test_embeddings, prototypes, unique_labels):
+    def update_test_predictions(self, test_embeddings, prototypes):
         """
-        Update test predictions with confidence weighting
+        Unified method for updating test predictions using distance and confidence
         """
         # Compute distances to prototypes
         distances = torch.cdist(test_embeddings, prototypes, p=2)
         
         # Convert distances to probabilities with temperature scaling
-        temperature = 2.0  # Temperature for softmax
+        temperature = 2.0
         logits = -distances / temperature
         probabilities = F.softmax(logits, dim=1)
         
@@ -406,105 +329,6 @@ class TransductiveLearner(nn.Module):
         
         return weighted_predictions
     
-    def initialize_test_predictions(self, test_embeddings, prototypes, unique_labels):
-        """
-        Initialize test predictions using distance to prototypes
-        """
-        # Compute distances to prototypes
-        distances = torch.cdist(test_embeddings, prototypes, p=2)
-        
-        # Convert distances to probabilities (softmax)
-        logits = -distances
-        probabilities = F.softmax(logits, dim=1)
-        
-        return probabilities
-    
-    def update_prototypes(self, support_embeddings, support_y, test_embeddings, test_predictions):
-        """
-        Update prototypes using both support set and test set
-        """
-        unique_labels = torch.unique(support_y)
-        updated_prototypes = []
-        
-        for label in unique_labels:
-            # Support set contribution
-            support_mask = support_y == label
-            support_contribution = support_embeddings[support_mask].mean(dim=0)
-            
-            # Test set contribution (weighted by prediction confidence)
-            test_weights = test_predictions[:, label]
-            if test_weights.sum() > 0:
-                test_contribution = (test_embeddings * test_weights.unsqueeze(1)).sum(dim=0) / test_weights.sum()
-            else:
-                test_contribution = torch.zeros_like(support_contribution)
-            
-            # Combine support and test contributions
-            combined_prototype = 0.7 * support_contribution + 0.3 * test_contribution
-            updated_prototypes.append(combined_prototype)
-        
-        return torch.stack(updated_prototypes)
-    
-    def update_test_predictions(self, test_embeddings, prototypes, unique_labels):
-        """
-        Update test predictions using current prototypes and graph structure
-        """
-        # Distance-based predictions
-        distances = torch.cdist(test_embeddings, prototypes, p=2)
-        distance_logits = -distances
-        
-        # Graph structure influence
-        similarity_graph = self.compute_similarity_graph(test_embeddings)
-        graph_influence = torch.mm(similarity_graph, distance_logits)
-        
-        # Combine distance and graph information
-        combined_logits = 0.7 * distance_logits + 0.3 * graph_influence
-        
-        # Convert to probabilities
-        probabilities = F.softmax(combined_logits, dim=1)
-        
-        return probabilities
-    
-    def compute_transductive_loss(self, support_embeddings, support_y, test_embeddings, 
-                                 test_predictions, prototypes, unique_labels):
-        """
-        Compute transductive learning loss
-        """
-        total_loss = 0
-        
-        # 1. Support set classification loss
-        support_distances = torch.cdist(support_embeddings, prototypes, p=2)
-        support_logits = -support_distances
-        support_loss = F.cross_entropy(support_logits, support_y)
-        total_loss += support_loss
-        
-        # 2. Test set consistency loss (prototype consistency)
-        test_distances = torch.cdist(test_embeddings, prototypes, p=2)
-        test_logits = -test_distances
-        test_consistency_loss = F.kl_div(
-            F.log_softmax(test_logits, dim=1),
-            test_predictions,
-            reduction='batchmean'
-        )
-        total_loss += self.consistency_weight * test_consistency_loss
-        
-        # 3. Graph structure loss (smoothness)
-        similarity_graph = self.compute_similarity_graph(test_embeddings)
-        graph_loss = self.compute_graph_smoothness_loss(test_embeddings, similarity_graph)
-        total_loss += self.graph_weight * graph_loss
-        
-        return total_loss
-    
-    def compute_graph_smoothness_loss(self, embeddings, similarity_graph):
-        """
-        Compute graph smoothness loss to encourage similar samples to have similar embeddings
-        """
-        # Compute pairwise distances
-        pairwise_distances = torch.cdist(embeddings, embeddings, p=2)
-        
-        # Smoothness loss: similar samples should have similar embeddings
-        smoothness_loss = torch.sum(similarity_graph * pairwise_distances)
-        
-        return smoothness_loss
 
 class MetaLearner(nn.Module):
     """
@@ -529,7 +353,7 @@ class MetaLearner(nn.Module):
         """
         Extract embeddings from the transductive network
         """
-        return self.transductive_net.get_embeddings(x)
+        return self.transductive_net.extract_embeddings(x)
     
     def meta_update(self, support_x, support_y, query_x, query_y):
         """
@@ -545,18 +369,17 @@ class MetaLearner(nn.Module):
             loss: Meta-learning loss
         """
         # Get embeddings
-        support_embeddings = self.transductive_net.get_embeddings(support_x)
-        query_embeddings = self.transductive_net.get_embeddings(query_x)
+        support_embeddings = self.transductive_net.extract_embeddings(support_x)
+        query_embeddings = self.transductive_net.extract_embeddings(query_x)
         
         # Compute prototypes
-        prototypes, prototype_labels = self.transductive_net.compute_prototypes(
-            support_embeddings, support_y
+        prototypes, prototype_labels = self.transductive_net.update_prototypes(
+            support_embeddings, support_y, query_embeddings, None
         )
         
-        # Classify query samples
-        predictions, distances = self.transductive_net.classify(
-            query_embeddings, prototypes, prototype_labels
-        )
+        # Classify query samples using distance-based classification
+        distances = torch.cdist(query_embeddings, prototypes, p=2)
+        predictions = prototype_labels[torch.argmin(distances, dim=1)]
         
         # Compute loss using Focal Loss for better class imbalance handling
         logits = -distances
@@ -589,11 +412,11 @@ class MetaLearner(nn.Module):
             adapted_optimizer.zero_grad()
             
             # Get embeddings
-            support_embeddings = adapted_model.transductive_net.get_embeddings(support_x)
+            support_embeddings = adapted_model.transductive_net.extract_embeddings(support_x)
             
             # Compute prototypes
-            prototypes, prototype_labels = adapted_model.transductive_net.compute_prototypes(
-                support_embeddings, support_y
+            prototypes, prototype_labels = adapted_model.transductive_net.update_prototypes(
+                support_embeddings, support_y, support_embeddings, None
             )
             
             # Compute loss (prototype consistency)
@@ -726,14 +549,13 @@ class TransductiveFewShotModel(nn.Module):
         support_embeddings = self.meta_learner.get_embeddings(support_x)
         
         # Compute prototypes from support set
-        prototypes, prototype_labels = self.meta_learner.transductive_net.compute_prototypes(
-            support_embeddings, support_y
+        prototypes, prototype_labels = self.meta_learner.transductive_net.update_prototypes(
+            support_embeddings, support_y, test_embeddings, None
         )
         
-        # Initial classification
-        initial_predictions, distances = self.meta_learner.transductive_net.classify(
-            test_embeddings, prototypes, prototype_labels
-        )
+        # Initial classification using distance-based approach
+        distances = torch.cdist(test_embeddings, prototypes, p=2)
+        initial_predictions = prototype_labels[torch.argmin(distances, dim=1)]
         
         # Compute confidence scores
         confidence = self.compute_confidence(test_embeddings, prototypes, prototype_labels)
@@ -754,9 +576,8 @@ class TransductiveFewShotModel(nn.Module):
             # Get the original test samples for low-confidence cases
             low_confidence_samples = x[low_confidence_mask]
             adapted_embeddings = adapted_model.get_embeddings(low_confidence_samples)
-            adapted_predictions, adapted_distances = adapted_model.transductive_net.classify(
-                adapted_embeddings, prototypes, prototype_labels
-            )
+            adapted_distances = torch.cdist(adapted_embeddings, prototypes, p=2)
+            adapted_predictions = prototype_labels[torch.argmin(adapted_distances, dim=1)]
             
             # Update predictions for low-confidence samples
             final_predictions = initial_predictions.clone()
